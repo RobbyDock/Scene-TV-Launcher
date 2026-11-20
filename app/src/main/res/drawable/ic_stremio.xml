@@ -1,0 +1,31 @@
+<!--
+  Stremio mark: a rounded square turned 45 degrees with a violet to blue gradient
+  running top to bottom, and a white play mark on top.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="40"
+    android:viewportHeight="40">
+    <group
+        android:pivotX="20"
+        android:pivotY="20"
+        android:rotation="45">
+        <path android:pathData="M11.4,5.9h17.2a5.5,5.5 0,0 1,5.5 5.5v17.2a5.5,5.5 0,0 1,-5.5 5.5H11.4a5.5,5.5 0,0 1,-5.5 -5.5V11.4a5.5,5.5 0,0 1,5.5 -5.5z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="5.9" android:startY="5.9"
+                    android:endX="34.1" android:endY="34.1"
+                    android:type="linear">
+                    <item android:offset="0" android:color="#7B5BF5" />
+                    <item android:offset="0.5" android:color="#5B59ED" />
+                    <item android:offset="1" android:color="#1C56DC" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M16.5,14.5 Q16.5,13.0 17.75,13.83 L25.75,19.17 Q27.0,20.0 25.75,20.83 L17.75,26.17 Q16.5,27.0 16.5,25.5 Z" />
+</vector>

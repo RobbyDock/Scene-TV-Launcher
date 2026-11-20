@@ -1,0 +1,1316 @@
+package com.robbydock.scene
+
+import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.os.Build
+import android.os.Debug
+import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+
+/**
+ * Split-view settings: grouped rows on the left, and a live preview or controls for the focused
+ * row on the right. Previews are renders of the real Home screen. Nothing changes until OK.
+ */
+@SuppressLint("ViewConstructor")
+class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : OverlayBase(act, 1f), BackAware {
+
+    private companion object {
+        /** Pane titles whose settings live in each profile's own file. */
+        val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Clock & Weather", "Spotlight",
+            "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "Export Settings", "Restore Settings", "Reset Home")
+        /** Pane titles whose settings every profile shares. */
+        val ALL_PROFILES = setOf("Profiles", "Sounds", "Stremio Account", "Screensaver")
+        const val GROUP_LABEL_H = 32f
+        const val GROUP_GAP = 14f
+        /** Space above the large title, which scrolls away with the list. */
+        const val TITLE_TOP = 56f
+        const val TITLE_H = 96f
+        const val PANE_X = 984f
+        const val PANE_Y = 96f
+        const val PANE_W = 856f
+        const val PANE_H = 1080f - PANE_Y - 40f
+    }
+
+    /** Keeps the focused row near the middle of the list. */
+    private val scroll = object : ScrollView(act) {
+        override fun computeScrollDeltaToGetChildRectOnScreen(rect: android.graphics.Rect): Int {
+            if (childCount == 0) return 0
+            val max = (getChildAt(0).height - height).coerceAtLeast(0)
+            val target = (rect.centerY() - height * 0.45f).toInt().coerceIn(0, max)
+            return target - scrollY
+        }
+    }.apply {
+        isVerticalScrollBarEnabled = false
+        isSmoothScrollingEnabled = true
+        isVerticalFadingEdgeEnabled = true
+        setFadingEdgeLength(Theme.ipx(48f))
+    }
+    private val list = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+    private val pane = FrameLayout(act).apply { clipChildren = false }
+    /** Small title that settles at the top once the large one has scrolled away. */
+    private val smallTitle = act.label("Settings", 30f, Theme.TEXT, Theme.SEMIBOLD).apply { alpha = 0f }
+    private val rows = LinkedHashMap<String, SettingRow>()
+    private val rowIcons = HashMap<String, Int>()
+    private var current: String? = null
+    private var backupStatus = ""
+    private var pendingPreview: Runnable? = null
+    private var glassPreview: GlassPreview? = null
+
+    init {
+        // The large title is the list's first item and scrolls with it.
+        place(act.clipBox(scroll), 84f, 0f, 840f, 1080f)
+        scroll.addView(list, LayoutParams(-1, -2))
+        list.setPadding(Theme.ipx(12f), Theme.ipx(TITLE_TOP), Theme.ipx(12f), Theme.ipx(120f))
+        val scrim = TopScrim(act).apply { alpha = 0f }
+        place(scrim, 0f, 0f, 940f, 130f)
+        place(smallTitle, 96f, 30f, 600f, 40f)
+        scroll.viewTreeObserver.addOnScrollChangedListener {
+            val y = scroll.scrollY.toFloat()
+            val th = Theme.px(TITLE_H)
+            // First the large title shrinks and fades as it scrolls away.
+            list.getChildAt(0)?.let { big ->
+                val k = (y / th).coerceIn(0f, 1f)
+                big.pivotX = 0f
+                big.pivotY = big.height.toFloat()
+                big.scaleX = 1f - 0.3f * k
+                big.scaleY = big.scaleX
+                big.alpha = 1f - k
+            }
+            // Then a small title settles at the top, and further down it leaves too.
+            val inT = ((y - th * 0.6f) / (th * 0.5f)).coerceIn(0f, 1f)
+            // The bar slides up out of view as one piece.
+            val out = ((y - th * 3f) / (th * 0.6f)).coerceIn(0f, 1f)
+            val lift = -scrim.height * out
+            smallTitle.alpha = inT
+            smallTitle.translationY = Theme.px(10f) * (1f - inT) + lift
+            scrim.alpha = (y / Theme.px(48f)).coerceIn(0f, 1f)
+            scrim.translationY = lift
+        }
+        place(pane, PANE_X, PANE_Y, PANE_W, PANE_H)
+        build()
+        post { (rows[initialFocus ?: "accent"] ?: rows.values.first()).requestFocus() }
+    }
+
+    override fun onBack(): Boolean {
+        // Back from the right-hand pane returns to the row instead of closing.
+        val f = findFocus()
+        if (f != null && isInPane(f)) {
+            rows[current]?.requestFocus()
+            return true
+        }
+        return false
+    }
+
+    /** Up and down inside the pane stay in the pane. */
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        if (focused != null && (direction == View.FOCUS_UP || direction == View.FOCUS_DOWN) && isInPane(focused)) {
+            return android.view.FocusFinder.getInstance().findNextFocus(pane, focused, direction) ?: focused
+        }
+        return super.focusSearch(focused, direction)
+    }
+
+    private fun isInPane(v: View): Boolean {
+        var p: View? = v
+        while (p != null) {
+            if (p === pane) return true
+            p = p.parent as? View
+        }
+        return false
+    }
+
+    // ---------------------------------------------------------------- list
+
+    private fun build() {
+        val keep = current
+        list.removeAllViews()
+        rows.clear()
+        val cfg = act.cfg
+        first = true
+        list.addView(act.label("Settings", 72f, Theme.TEXT, Theme.BOLD).apply { setPadding(Theme.ipx(8f), 0, 0, 0) },
+            LinearLayout.LayoutParams(-1, Theme.ipx(TITLE_H)).apply { bottomMargin = Theme.ipx(24f) })
+
+        group("Profile")
+        val prof = Profiles.current
+        row("profile", R.drawable.ic_account_circle, prof.name,
+            if (Profiles.list.size == 1) "1 profile" else "${Profiles.list.size} profiles") { paneProfiles() }.apply {
+            avatar = prof
+            setOnClickListener { pane.findViewWithTag<View>("profav${Profiles.list.indexOf(Profiles.current)}")?.requestFocus() }
+        }
+        endGroup()
+
+        group("Appearance")
+        row("accent", R.drawable.ic_palette, "Accent Colour", Theme.ACCENTS[cfg.accent].name) { paneAccent() }.apply {
+            swatch = Theme.accent
+            setOnClickListener { pane.findViewWithTag<View>("swatch${cfg.accent}")?.requestFocus() }
+        }
+        row("dark", R.drawable.ic_dark_mode, "True Dark", "") { paneDark() }.apply {
+            trail = SettingRow.Trail.SWITCH
+            checked = cfg.trueDark
+            setOnClickListener { cfg.trueDark = !cfg.trueDark; applyTheme("dark") }
+        }
+        row("glass", R.drawable.ic_opacity, "Glass Strength", "") { paneGlass() }.apply {
+            trail = SettingRow.Trail.CHEVRON
+            value = "${Math.round(cfg.glass * 100)}%"
+            setOnClickListener { pane.findViewWithTag<View>("glassbar")?.requestFocus() }
+        }
+        row("sounds", R.drawable.ic_volume_up, "Sounds", "") { paneSounds() }.apply {
+            trail = SettingRow.Trail.SWITCH
+            checked = Sounds.on
+            setOnClickListener { Sounds.set(act, !Sounds.on); refresh("sounds") }
+        }
+        row("motion", R.drawable.ic_auto_awesome, "Motion", arrayOf("Full", "Reduced", "Off")[cfg.motion]) { paneMotion() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("motion0")?.requestFocus() }
+        }
+        endGroup()
+
+        group("Home Screen")
+        row("clock", R.drawable.ic_schedule, "Clock & Weather", clockSummary()) { paneClock() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("opt0")?.requestFocus() }
+        }
+        row("spot", R.drawable.ic_movie, "Spotlight", "") { paneSpotlight() }.apply {
+            trail = SettingRow.Trail.SWITCH
+            checked = cfg.spotlight
+            setOnClickListener { cfg.spotlight = !cfg.spotlight; act.save(); act.home.rebuild(); refresh("spot") }
+        }
+        row("homerow", R.drawable.ic_apps, "Home Row", arrayOf("Pinned apps", "Recent apps", "None")[cfg.homeRow]) { paneHomeRow() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("homerow0")?.requestFocus() }
+        }
+        row("pins", R.drawable.ic_push_pin, "Pinned Apps", "${cfg.pinned.size} pinned") { panePinned() }.apply {
+            setOnClickListener { act.push(AppPicker(act)) }
+        }
+        row("hidden", R.drawable.ic_visibility_off, "Hidden Apps", if (cfg.hidden.isEmpty()) "None" else "${cfg.hidden.size} hidden") { paneHidden() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("hidden0")?.requestFocus() }
+        }
+        row("sort", R.drawable.ic_sort_by_alpha, "All Apps Order", arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { paneSort() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("sort0")?.requestFocus() }
+        }
+        val cwCount = act.hiddenContinueCount
+        row("cwhidden", R.drawable.ic_movie_off, "Hidden Titles", if (cwCount == 0) "None" else "$cwCount hidden") { paneCwHidden() }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener { if (act.hiddenContinueCount > 0) { act.unhideAllContinue(); refresh("cwhidden") } }
+        }
+        endGroup()
+
+        group("Stremio")
+        val signed = Stremio.signedIn(act)
+        row("account", R.drawable.ic_stremio, "Stremio Account", if (signed) (Stremio.email(act) ?: "Signed in") else "Not signed in") { paneAccount() }.apply {
+            brandIcon = true
+            setOnClickListener { if (Stremio.signedIn(act)) pane.findViewWithTag<View>("acct0")?.requestFocus() else act.openSignIn() }
+        }
+        endGroup()
+
+        group("Backup & Reset")
+        row("export", R.drawable.ic_backup, "Export Settings", "") { paneBackup(true) }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener {
+                val write = {
+                    backupStatus = if (Store.export(act, act.cfg)) "Saved to ${Store.backupPath(act)}" else "Couldn't write the backup file."
+                    paneBackup(true)
+                }
+                if (Store.hasBackup(act)) {
+                    confirm("Replace the backup?", "A backup file is already on this TV", "Replace backup", R.drawable.ic_backup,
+                        "The old file is overwritten with ${Profiles.current.name}'s settings") { write() }
+                } else write()
+            }
+        }
+        row("restore", R.drawable.ic_restore, "Restore Settings", "") { paneBackup(false) }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener {
+                val c = Store.restore(act)
+                if (c == null) {
+                    backupStatus = "${Store.restoreProblem ?: "No valid backup."} File: ${Store.backupPath(act)}"
+                    paneBackup(false)
+                } else {
+                    confirm("Restore settings?", "Replaces ${Profiles.current.name}'s Home settings", "Restore from backup", R.drawable.ic_restore,
+                        "Pinned apps, colours and layout come from the file. This can't be undone.") {
+                        backupStatus = "Settings restored."
+                        act.replaceConfig(c)
+                        refresh("restore")
+                    }
+                }
+            }
+        }
+        row("setup", R.drawable.ic_rocket_launch, "Run Setup Again", "") { paneSetup() }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener {
+                confirm("Run setup again?", "Settings close and setup starts from the beginning", "Start setup", R.drawable.ic_rocket_launch,
+                    "Each step can still be skipped") { act.runSetup() }
+            }
+        }
+        row("reset", R.drawable.ic_refresh, "Reset Home", "") { paneReset() }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener {
+                confirm("Reset ${Profiles.current.name}'s Home?", "This can't be undone", "Reset Home", R.drawable.ic_refresh,
+                    "True Dark, layout options, hidden apps and sorting go back to the defaults") {
+                    val fresh = Config().apply {
+                        hidden.add(Config.STREMIO_BOOT)
+                        // The accent is the profile's colour.
+                        accent = Profiles.current.color
+                        city = act.cfg.city; lat = act.cfg.lat; lon = act.cfg.lon
+                        for (p in act.cfg.pinned) pinned.add(p)
+                        names.putAll(act.cfg.names)
+                    }
+                    act.replaceConfig(fresh)
+                    refresh("reset")
+                    act.toast("Home reset")
+                }
+            }
+        }
+        endGroup()
+
+        group("Device")
+        row("dream", R.drawable.ic_schedule, "Screensaver", dreamSummary()) { paneDream() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("dream0")?.requestFocus() }
+        }
+        systemRow("sys", R.drawable.ic_settings, "System Settings", Settings.ACTION_SETTINGS,
+            listOf("Accounts", "Date, Time & Language", "Privacy", "Device Info & Updates"))
+        systemRow("net", R.drawable.ic_wifi, "Network & Internet", Settings.ACTION_WIFI_SETTINGS,
+            listOf("Wi-Fi", "Ethernet", "Proxy & IP"))
+        systemRow("remotes", R.drawable.ic_settings_remote, "Remotes & Accessories", Settings.ACTION_BLUETOOTH_SETTINGS,
+            listOf("Remotes & Gamepads", "Headphones & Speakers", "TV Control"))
+        systemRow("display", R.drawable.ic_display_settings, "Display & Sound", "android.settings.DISPLAY_SETTINGS",
+            listOf("Resolution", "HDR & Colour", "Audio Output", "Screensaver"))
+        systemRow("appsys", R.drawable.ic_apps, "Apps & Storage", Settings.ACTION_APPLICATION_SETTINGS,
+            listOf("Permissions", "Cache & Data", "Default Apps", "Storage"))
+        endGroup()
+
+        group("About")
+        row("about", R.drawable.ic_info, "About", versionName()) { paneAbout() }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener { pane.findViewWithTag<View>("about0")?.requestFocus() }
+            // Holding OK turns Demo Mode on or off.
+            setOnLongClickListener {
+                act.pop()
+                if (Demo.on) act.endDemo() else act.startDemo()
+                true
+            }
+        }
+        row("kofi", R.drawable.ic_favorite, "Support on Ko-fi", "") { paneKofi() }.apply { trail = SettingRow.Trail.HEART }
+        endGroup()
+
+        if (keep != null) post { rows[keep]?.requestFocus() }
+    }
+
+    private var groupView: LinearLayout? = null
+    private var first = true
+
+    private fun group(title: String) {
+        list.addView(act.label(title, 24f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(Theme.ipx(8f), 0, 0, 0)
+        }, LinearLayout.LayoutParams(-2, Theme.ipx(GROUP_LABEL_H)).apply {
+            topMargin = if (first) 0 else Theme.ipx(28f)
+            bottomMargin = Theme.ipx(GROUP_GAP)
+        })
+        first = false
+        val g = object : LinearLayout(act) {
+            private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            override fun onDraw(c: android.graphics.Canvas) {
+                p.color = Theme.surface
+                c.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), p)
+            }
+        }.apply {
+            orientation = LinearLayout.VERTICAL
+            setWillNotDraw(false)
+            clipChildren = false
+        }
+        list.addView(g, LinearLayout.LayoutParams(-1, -2))
+        groupView = g
+    }
+
+    private fun endGroup() { groupView = null }
+
+    private fun row(key: String, icon: Int, title: String, sub: String, pane: () -> Unit): SettingRow {
+        val g = groupView!!
+        val r = SettingRow(act, icon, title).apply {
+            subtitle = sub
+            divider = g.childCount > 0
+            focusKey = key
+            onFocused = { current = key; pane() }
+        }
+        g.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(112f)))
+        rows[key] = r
+        rowIcons[key] = icon
+        return r
+    }
+
+    private fun systemRow(key: String, icon: Int, title: String, action: String, inside: List<String>) {
+        row(key, icon, title, "") { paneSystem(title, inside, action) }.apply {
+            trail = SettingRow.Trail.OPEN
+            setOnClickListener { pane.findViewWithTag<View>("sysopen")?.requestFocus() ?: act.openSystemSettings(action) }
+        }
+    }
+
+    /** Tag of the pane control that last had focus, or null when focus was in the list. */
+    private var lastPaneTag: Any? = null
+
+    override fun requestChildFocus(child: View?, focused: View?) {
+        super.requestChildFocus(child, focused)
+        lastPaneTag = focused?.takeIf { isInPane(it) }?.tag
+    }
+
+    /** Rebuilds the list after a change, keeping focus on [key], or on the pane control in use. */
+    private fun refresh(key: String) {
+        val restore = if (key == current) lastPaneTag else null
+        current = key
+        build()
+        invalidateAll()
+        if (restore != null) post { post { pane.findViewWithTag<View>(restore)?.requestFocus() } }
+    }
+
+    private fun applyTheme(key: String) {
+        act.themeChanged()
+        refresh(key)
+    }
+
+    private fun versionName(): String = try {
+        act.packageManager.getPackageInfo(act.packageName, 0).versionName ?: ""
+    } catch (e: Exception) { "" }
+
+    // ---------------------------------------------------------------- pane helpers
+
+    /**
+     * Pane top: a large title and, optionally, one short line.
+     */
+    private fun paneHeader(title: String, body: String = "") {
+        pendingPreview?.let { removeCallbacks(it) }
+        glassPreview = null
+        pane.removeAllViews()
+        pane.place(act.label(title, 46f, Theme.TEXT, Theme.BOLD), 48f, 40f, PANE_W - 96f, 62f)
+        // Says whether a change stays with this profile or reaches every profile.
+        val scope = when (title) {
+            in PER_PROFILE -> "Per profile"
+            in ALL_PROFILES -> "All profiles"
+            else -> null
+        }
+        if (scope != null) {
+            val box = FrameLayout(act)
+            box.addView(Chip(act, scope).apply { contentDescription = scope }, FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END))
+            pane.place(box, 48f, 50f, PANE_W - 96f, 44f)
+        }
+        if (body.isNotEmpty()) pane.place(act.label(body, 24f, Theme.TEXT_DIM, Theme.REGULAR, 2), 48f, 114f, PANE_W - 96f, 66f)
+        Motion.enter(pane)
+    }
+
+    /** Quiet line at the foot of the pane saying what OK does. */
+    private fun paneHint(text: String) {
+        pane.place(act.label(text, 22f, Theme.TEXT_DIM, Theme.MEDIUM).apply { alpha = 0.8f }, 48f, PANE_H - 52f, PANE_W - 96f, 32f)
+    }
+
+    /** A rounded card that holds a column of rows. */
+    private fun cardColumn(): LinearLayout = object : LinearLayout(act) {
+        private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        override fun onDraw(c: android.graphics.Canvas) {
+            p.color = Theme.surface
+            c.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), p)
+        }
+    }.apply {
+        orientation = LinearLayout.VERTICAL
+        setWillNotDraw(false)
+        clipChildren = false
+    }
+
+    private fun preview(
+        x: Float, y: Float, w: Float,
+        accent: Int = act.cfg.accent, dark: Boolean = act.cfg.trueDark, glass: Float = act.cfg.glass, spot: Boolean = act.cfg.spotlight,
+    ): MiniHome = MiniHome(act).apply {
+        accentIndex = accent; this.dark = dark; this.glass = glass; spotlight = spot
+    }.also { pane.place(it, x, y, w, w * 9f / 16f) }
+
+    private fun centredText(text: String, size: Float, color: Int, face: android.graphics.Typeface = Theme.REGULAR): TextView =
+        act.label(text, size, color, face).apply { gravity = Gravity.CENTER_HORIZONTAL }
+
+    // ---------------------------------------------------------------- pane building blocks
+
+    /** Where content starts under a header with no sub line, and with one. */
+    private val top0 = 150f
+    private val top1 = 192f
+
+    /** Small section label inside the pane. */
+    private fun section(text: String, y: Float) {
+        pane.place(act.label(text, 24f, Theme.TEXT_DIM, Theme.SEMIBOLD), 56f, y, PANE_W - 112f, 32f)
+    }
+
+    /** Rounded card with label and value lines. Returns the bottom edge. */
+    private fun infoCard(lines: List<Pair<String, String>>, y: Float): Float {
+        val card = cardColumn()
+        card.setPadding(Theme.ipx(32f), Theme.ipx(14f), Theme.ipx(32f), Theme.ipx(14f))
+        for ((i, kv) in lines.withIndex()) {
+            val line = FrameLayout(act)
+            line.place(act.label(kv.first, 25f, Theme.TEXT_DIM), 0f, 0f, 260f, 64f).also { (it as TextView).gravity = Gravity.CENTER_VERTICAL }
+            line.place(act.label(kv.second, 25f, Theme.TEXT, Theme.MEDIUM).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END }, 260f, 0f, PANE_W - 96f - 64f - 260f, 64f)
+            card.addView(line, LinearLayout.LayoutParams(-1, Theme.ipx(64f)))
+            if (i < lines.size - 1) card.addView(View(act).apply { setBackgroundColor(Theme.withAlpha(Theme.outline, 0.6f)) }, LinearLayout.LayoutParams(-1, Theme.ipx(1.5f)))
+        }
+        val h = 28f + lines.size * 64f + (lines.size - 1) * 1.5f
+        pane.place(card, 48f, y, PANE_W - 96f, h)
+        return y + h
+    }
+
+    /** Empty state: an icon in a tinted circle with one line under it. */
+    private fun emptyState(icon: Int, text: String, y: Float = 260f) {
+        pane.place(IconBadge(act, icon), (PANE_W - 120f) / 2, y, 120f, 120f)
+        pane.place(centredText(text, 26f, Theme.TEXT_DIM), 48f, y + 152f, PANE_W - 96f, 80f).also { (it as TextView).maxLines = 2 }
+    }
+
+    /** Rounded card for a preview or short content, on the surface colour. */
+    private fun surfaceCard(x: Float, y: Float, w: Float, h: Float): Panel =
+        Panel(act, Theme.R_CARD, { Theme.surface }, false).also { pane.place(it, x, y, w, h) }
+
+    // ---------------------------------------------------------------- panes
+
+    private fun paneAccent() {
+        val cfg = act.cfg
+        paneHeader("Accent Colour")
+        val pw = 600f
+        val big = preview((PANE_W - pw) / 2, top0, pw)
+        val name = centredText(Theme.ACCENTS[cfg.accent].name, 30f, Theme.TEXT, Theme.SEMIBOLD)
+        pane.place(name, 48f, top0 + pw * 9f / 16f + 22f, PANE_W - 96f, 40f)
+        val cols = 7
+        val w = 72f
+        val gap = 30f
+        val rowW = cols * w + (cols - 1) * gap
+        val x0 = (PANE_W - rowW) / 2
+        val y0 = top0 + pw * 9f / 16f + 90f
+        val swatches = ArrayList<View>()
+        for (i in Theme.ACCENTS.indices) {
+            val s = Swatch(act, i).apply {
+                chosen = i == cfg.accent
+                tag = "swatch$i"
+                setOnFocusChangeListener { _, has ->
+                    if (!has) return@setOnFocusChangeListener
+                    name.text = Theme.ACCENTS[i].name
+                    big.accentIndex = i
+                    big.outlined = true
+                }
+                setOnClickListener {
+                    cfg.accent = i
+                    // The profile's picture follows its colour.
+                    Profiles.current.color = i
+                    Profiles.save(act)
+                    act.themeChanged()
+                    refresh("accent")
+                    post { pane.findViewWithTag<View>("swatch$i")?.requestFocus() }
+                }
+            }
+            pane.place(s, x0 + (i % cols) * (w + gap), y0 + (i / cols) * 96f, w, w)
+            swatches.add(s)
+        }
+        Motion.stagger(swatches, 14L, 14)
+    }
+
+    private fun twoUp(left: String, right: String, leftOn: Boolean, a: MiniHome.() -> Unit, b: MiniHome.() -> Unit, y: Float = top1): Pair<MiniHome, MiniHome> {
+        val w = 360f
+        val gap = 40f
+        val x0 = (PANE_W - w * 2 - gap) / 2
+        val l = preview(x0, y, w).apply(a).apply { outlined = leftOn }
+        val r = preview(x0 + w + gap, y, w).apply(b).apply { outlined = !leftOn }
+        val labelY = y + w * 9f / 16f + 22f
+        pane.place(centredText(left, 26f, if (leftOn) Theme.TEXT else Theme.TEXT_DIM, Theme.MEDIUM), x0, labelY, w, 36f)
+        pane.place(centredText(right, 26f, if (!leftOn) Theme.TEXT else Theme.TEXT_DIM, Theme.MEDIUM), x0 + w + gap, labelY, w, 36f)
+        Motion.stagger(listOf(l, r), 60L)
+        return l to r
+    }
+
+    private fun paneDark() {
+        val cfg = act.cfg
+        paneHeader("True Dark")
+        val (a, b) = twoUp("Dark", "True Dark", !cfg.trueDark, { dark = false }, { dark = true })
+        a.makeFocusable(true)
+        b.makeFocusable(true)
+        a.setOnClickListener { if (cfg.trueDark) { cfg.trueDark = false; applyTheme("dark") } }
+        b.setOnClickListener { if (!cfg.trueDark) { cfg.trueDark = true; applyTheme("dark") } }
+    }
+
+    private fun paneGlass() {
+        val cfg = act.cfg
+        paneHeader("Glass Strength")
+        val w = PANE_W - 96f
+        val ph = w * 9f / 16f
+        glassPreview = GlassPreview(act).apply { strength = cfg.glass }.also { pane.place(it, 48f, top0, w, ph) }
+        val bar = GlassBar(act).apply {
+            tag = "glassbar"
+            value = cfg.glass
+            onChange = { v ->
+                cfg.glass = v
+                Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
+                act.save()
+                act.home.invalidateAll()
+                glassPreview?.strength = v
+                rows["glass"]?.value = "${Math.round(v * 100)}%"
+            }
+        }
+        pane.place(bar, 48f, top0 + ph + 36f, w, 80f)
+    }
+
+    private fun paneMotion() {
+        val cfg = act.cfg
+        paneHeader("Motion")
+        val demo = MotionPreview(act).apply { mode = cfg.motion }
+        pane.place(demo, 48f, top0, PANE_W - 96f, 260f)
+        val add = optionColumn(top0 + 284f, "motion")
+        val names = arrayOf("Full", "Reduced", "Off")
+        val icons = intArrayOf(R.drawable.ic_auto_awesome, R.drawable.ic_timer, R.drawable.ic_close)
+        for (i in names.indices) {
+            val on = cfg.motion == i
+            choice(add, icons[i], names[i], on) {
+                cfg.motion = i
+                Theme.motion = i
+                act.save()
+                refresh("motion")
+            }.setOnFocusChangeListener { _, has -> if (has) demo.mode = i }
+        }
+        add(R.drawable.ic_home_app_logo, "Start Animation", "", SettingRow.Trail.SWITCH) {
+            if (cfg.motion == 2) return@add
+            cfg.splash = !cfg.splash
+            act.save()
+            refresh("motion")
+        }.apply {
+            checked = cfg.splash && cfg.motion != 2
+            alpha = if (cfg.motion == 2) 0.45f else 1f
+            setOnFocusChangeListener { _, has -> if (has) demo.mode = cfg.motion }
+        }
+    }
+
+    private fun clockSummary(): String {
+        val cfg = act.cfg
+        return when {
+            cfg.clockOn && cfg.weatherOn -> "On"
+            cfg.clockOn -> "Clock only"
+            cfg.weatherOn -> "Weather only"
+            else -> "Hidden"
+        }
+    }
+
+    private class Choice(val label: String, val icon: Int, val sub: String = "")
+
+    /** Opens a list of choices; the current one is ticked. */
+    private fun choose(title: String, options: List<Choice>, current: Int, focusTag: String, footer: View? = null, footerH: Float = 0f, pick: (Int) -> Unit) {
+        val actions = options.mapIndexed { i, o ->
+            Sheet.Action(o.label, o.icon, o.sub, checked = i == current) {
+                pick(i)
+                act.save()
+                act.home.weatherChanged()
+                act.home.requestLayout()
+                rows["clock"]?.subtitle = clockSummary()
+                paneClock()
+                post { pane.findViewWithTag<View>(focusTag)?.requestFocus() }
+            }
+        }
+        act.push(Sheet(act, title, "Clock & Weather", null, actions, footer, footerH))
+    }
+
+    private fun locationCard(): LocationCard {
+        val cfg = act.cfg
+        return LocationCard(act).apply {
+            city = cfg.city
+            lat = cfg.lat
+            lon = cfg.lon
+            automatic = cfg.locAuto
+            act.weather?.let { w ->
+                val (cond, _) = Weather.describe(w.code, w.day)
+                weatherLine = "${Weather.format(w.temp, cfg.fahrenheit)}  ·  $cond  ·  ${Weather.format(w.high, cfg.fahrenheit)} / ${Weather.format(w.low, cfg.fahrenheit)}"
+            }
+        }
+    }
+
+    private fun paneClock() {
+        val cfg = act.cfg
+        paneHeader("Clock & Weather")
+        // Preview: the real, live top bar pill, larger and on its own.
+        val strip = FrameLayout(act).apply { clipChildren = false }
+        pane.place(strip, 48f, top0, PANE_W - 96f, 150f)
+        if (cfg.clockOn || cfg.weatherOn) {
+            val pill = InfoPill(act).apply { apply(cfg, act.weather); scaleX = 1.35f; scaleY = 1.35f }
+            strip.addView(pill, FrameLayout.LayoutParams(-2, Theme.ipx(88f), Gravity.CENTER))
+        } else {
+            strip.addView(act.label("Hidden", 28f, Theme.TEXT_DIM, Theme.MEDIUM).apply { gravity = Gravity.CENTER },
+                FrameLayout.LayoutParams(-1, -1))
+        }
+
+        val scroller = ScrollView(act).apply {
+            isVerticalScrollBarEnabled = false
+            // Rows fade out at the edges.
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(Theme.ipx(40f))
+        }
+        val holder = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Theme.ipx(8f), Theme.ipx(8f), Theme.ipx(8f), Theme.ipx(24f))
+            clipChildren = false
+        }
+        val col = cardColumn()
+        holder.addView(col, LinearLayout.LayoutParams(-1, -2))
+        scroller.addView(holder, LayoutParams(-1, -2))
+        pane.place(act.clipBox(scroller), 40f, top0 + 170f, PANE_W - 80f, PANE_H - top0 - 194f)
+        var n = 0
+        fun option(icon: Int, title: String, value: String, enabled: Boolean = true, click: (String) -> Unit) {
+            val tag = "opt${n++}"
+            val r = SettingRow(act, icon, title).apply {
+                this.value = value
+                trail = SettingRow.Trail.CHEVRON
+                divider = col.childCount > 0
+                this.tag = tag
+                alpha = if (enabled) 1f else 0.45f
+                setOnClickListener { if (enabled) click(tag) }
+            }
+            col.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
+        }
+        // Two-way settings flip in place; settings with more choices open a list.
+        fun toggle(icon: Int, title: String, on: Boolean, enabled: Boolean = true, flip: () -> Unit) {
+            val tag = "opt${n++}"
+            val r = SettingRow(act, icon, title).apply {
+                trail = SettingRow.Trail.SWITCH
+                checked = on
+                divider = col.childCount > 0
+                this.tag = tag
+                alpha = if (enabled) 1f else 0.45f
+                setOnClickListener {
+                    if (!enabled) return@setOnClickListener
+                    flip()
+                    act.save()
+                    act.home.weatherChanged()
+                    act.home.requestLayout()
+                    rows["clock"]?.subtitle = clockSummary()
+                    val y = scroller.scrollY
+                    paneClock()
+                    post {
+                        val v = pane.findViewWithTag<View>(tag)
+                        var p = v?.parent
+                        while (p != null && p !is ScrollView) p = p.parent
+                        (p as? ScrollView)?.scrollTo(0, y)
+                        v?.requestFocus()
+                    }
+                }
+            }
+            col.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
+        }
+        toggle(R.drawable.ic_schedule, "Clock", cfg.clockOn) { cfg.clockOn = !cfg.clockOn }
+        option(R.drawable.ic_schedule, "Time Format", arrayOf("System", "12-hour", "24-hour")[cfg.clock], cfg.clockOn) { t ->
+            choose("Time Format", listOf(
+                Choice("Follow System", R.drawable.ic_settings),
+                Choice("12-hour", R.drawable.ic_schedule, "7:38"),
+                Choice("24-hour", R.drawable.ic_schedule, "19:38"),
+            ), cfg.clock, t) { cfg.clock = it }
+        }
+        toggle(R.drawable.ic_schedule, "Date", cfg.showDate, cfg.clockOn) { cfg.showDate = !cfg.showDate }
+        toggle(R.drawable.ic_partly_cloudy_day, "Weather", cfg.weatherOn) {
+            cfg.weatherOn = !cfg.weatherOn
+            if (cfg.weatherOn) act.refreshWeather(force = true)
+        }
+        toggle(R.drawable.ic_thermostat, "Fahrenheit", cfg.fahrenheit, cfg.weatherOn) { cfg.fahrenheit = !cfg.fahrenheit }
+        option(R.drawable.ic_partly_cloudy_day, "Weather Details", arrayOf("Full", "High & low", "Now")[cfg.weatherDetail], cfg.weatherOn) { t ->
+            choose("Weather Details", listOf(
+                Choice("Full", R.drawable.ic_partly_cloudy_day, "Clear · 62° / 38°"),
+                Choice("High and Low", R.drawable.ic_thermostat, "62° / 38°"),
+                Choice("Temperature Only", R.drawable.ic_thermostat, "48°"),
+            ), cfg.weatherDetail, t) { cfg.weatherDetail = it }
+        }
+        val where = if (cfg.locAuto) "Automatic" else cfg.city.ifEmpty { "Not set" }.let { if (it.length > 18) it.take(17).trimEnd() + "…" else it }
+        option(R.drawable.ic_location_on, "Location", where, cfg.weatherOn) { t ->
+            choose("Weather Location", listOf(
+                Choice("Use This TV's Location", R.drawable.ic_my_location),
+                Choice("Choose a City", R.drawable.ic_search, cfg.city),
+            ), if (cfg.locAuto) 0 else 1, t, locationCard(), 330f) { i ->
+                if (i == 0) {
+                    cfg.locAuto = true
+                    act.withPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) { ok ->
+                        if (ok) act.refreshWeather(force = true)
+                        else act.toast("Location is off for this app. Allow it in Android settings, Apps.")
+                    }
+                } else {
+                    post {
+                        act.push(LocationPicker(act) {
+                            cfg.locAuto = false
+                            act.save()
+                            act.refreshWeather(force = true)
+                            paneClock()
+                        })
+                    }
+                }
+            }
+        }
+        Motion.staggerChildren(col)
+    }
+
+    /** Scrolling card of option rows in the pane, below [top]. Returns an adder for rows. */
+    private fun optionColumn(top: Float, tagPrefix: String): (Int, String, String, SettingRow.Trail, () -> Unit) -> SettingRow {
+        val scroller = ScrollView(act).apply {
+            isVerticalScrollBarEnabled = false
+            // Rows fade out at the edges.
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(Theme.ipx(40f))
+        }
+        val holder = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Theme.ipx(8f), Theme.ipx(8f), Theme.ipx(8f), Theme.ipx(24f))
+            clipChildren = false
+        }
+        val col = cardColumn()
+        holder.addView(col, LinearLayout.LayoutParams(-1, -2))
+        scroller.addView(holder, LayoutParams(-1, -2))
+        pane.place(act.clipBox(scroller), 40f, top, PANE_W - 80f, PANE_H - top - 24f)
+        post { Motion.staggerChildren(col) }
+        var n = 0
+        return { icon, title, value, trail, click ->
+            SettingRow(act, icon, title).apply {
+                // Rows without a trail show the text as a subtitle.
+                if (trail == SettingRow.Trail.NONE) subtitle = value else this.value = value
+                this.trail = trail
+                divider = col.childCount > 0
+                tag = "$tagPrefix${n++}"
+                setOnClickListener { click() }
+                col.addView(this, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
+            }
+        }
+    }
+
+    /** A choice row: its own icon, with a check on the right when chosen. */
+    private fun choice(add: (Int, String, String, SettingRow.Trail, () -> Unit) -> SettingRow, icon: Int, title: String, on: Boolean, click: () -> Unit) =
+        add(icon, title, "", SettingRow.Trail.CHECK, click).apply { checked = on }
+
+    /** Asks before a change that can't be undone. Focus starts on Cancel. */
+    private fun confirm(title: String, detail: String, doLabel: String, doIcon: Int, doSub: String, who: Profile? = null, run: () -> Unit) {
+        act.push(Dialog(act, doIcon, title, listOf(detail, doSub).filter { it.isNotEmpty() }.joinToString(". ") { it.trimEnd('.') } + ".", listOf(
+            Dialog.Button("Cancel", focus = true),
+            Dialog.Button(doLabel, primary = true) { run() },
+        ), who))
+    }
+
+    /** Switches to [q] from the Profiles pane, asking for its passcode first. */
+    private fun switchTo(q: Profile) {
+        if (q.id == Profiles.currentId) return
+        val go = {
+            act.switchProfile(q.id)
+            refresh("profile")
+            post { pane.findViewWithTag<View>("profav${Profiles.list.indexOf(q)}")?.requestFocus() }
+        }
+        if (!q.locked) go() else act.push(PasscodeScreen(act, q, PasscodeScreen.Mode.CHECK) { act.pop(); go() })
+    }
+
+    /** Runs [then] after the current profile's passcode, or straight away when it has none. */
+    private fun withCode(p: Profile, then: () -> Unit) {
+        if (!p.locked) { then(); return }
+        act.push(PasscodeScreen(act, p, PasscodeScreen.Mode.CHECK) { act.pop(); then() })
+    }
+
+    private fun paneProfiles() {
+        val p = Profiles.current
+        paneHeader("Profiles")
+        // Everyone at a glance, then Add. OK on a picture switches to that profile.
+        val canAdd = Profiles.list.size < Profiles.MAX
+        val cells = Profiles.list.size + if (canAdd) 1 else 0
+        val many = cells > 5
+        val size = if (many) 92f else 104f
+        val pitch = if (many) 122f else 140f
+        val stripH = size + 104f
+        val strip = FrameLayout(act).apply { clipChildren = false }
+        val scroll = android.widget.HorizontalScrollView(act).apply {
+            isHorizontalScrollBarEnabled = false
+            isHorizontalFadingEdgeEnabled = true
+            setFadingEdgeLength(Theme.ipx(40f))
+            clipChildren = false
+        }
+        scroll.addView(strip, FrameLayout.LayoutParams(Theme.ipx(32f + cells * pitch), Theme.ipx(stripH)))
+        pane.place(scroll, 40f, top0 - 8f, PANE_W - 80f, stripH)
+        fun caption(text: String, i: Int, dy: Float, sp: Float, color: Int, weight: android.graphics.Typeface) =
+            strip.place(act.label(text, sp, color, weight).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, 16f + i * pitch, 16f + size + dy, pitch, sp + 8f)
+        val avatars = ArrayList<View>()
+        for ((i, q) in Profiles.list.withIndex()) {
+            val av = AvatarView(act).apply {
+                letter = q.initial; emoji = q.emoji; colorIndex = q.color; locked = q.locked
+                tag = "profav$i"
+                contentDescription = if (q.id == p.id) "${q.name}, current" else "Switch to ${q.name}"
+                setOnClickListener { switchTo(q) }
+                setOnLongClickListener { profileMenu(p, q); true }
+            }
+            strip.place(av, 16f + i * pitch + (pitch - size) / 2, 16f, size, size)
+            val cur = q.id == p.id
+            caption(q.name, i, 20f, 21f, if (cur) Theme.TEXT else Theme.TEXT_DIM, if (cur) Theme.SEMIBOLD else Theme.REGULAR)
+            if (q.admin) caption("Admin", i, 50f, 18f, Theme.accent, Theme.SEMIBOLD)
+            avatars.add(av)
+        }
+        if (canAdd) {
+            val i = Profiles.list.size
+            val add = AvatarView(act, addMode = true).apply {
+                tag = "profadd"
+                contentDescription = "Add profile"
+                setOnClickListener { act.newProfile() }
+            }
+            strip.place(add, 16f + i * pitch + (pitch - size) / 2, 16f, size, size)
+            caption("Add", i, 20f, 21f, Theme.TEXT_DIM, Theme.REGULAR)
+            avatars.add(add)
+        }
+        avatars.forEachIndexed { i, v -> Motion.pop(v, i * 40L) }
+        val add = optionColumn(top0 + stripH, "prof")
+        add(R.drawable.ic_lock, "Passcode", if (p.locked) "On" else "Off", SettingRow.Trail.CHEVRON) {
+            if (!p.locked) {
+                act.push(PasscodeScreen(act, p, PasscodeScreen.Mode.SET) { code ->
+                    act.pop(); Profiles.setCode(act, p, code); act.home.rebuild(); refresh("profile"); act.toast("Passcode set")
+                    // An admin gets a recovery code the first time a passcode is set.
+                    if (p.admin && !p.hasRecovery) act.createRecovery(p) { refresh("profile") }
+                })
+            } else {
+                act.push(Sheet(act, "Passcode", p.name, null, listOf(
+                    Sheet.Action("Change Passcode", R.drawable.ic_lock) {
+                        withCode(p) {
+                            act.push(PasscodeScreen(act, p, PasscodeScreen.Mode.SET) { code ->
+                                act.pop(); Profiles.setCode(act, p, code); refresh("profile"); act.toast("Passcode changed")
+                            })
+                        }
+                    },
+                    Sheet.Action("Turn Off Passcode", R.drawable.ic_close) {
+                        withCode(p) { Profiles.setCode(act, p, null); act.home.rebuild(); refresh("profile") }
+                    },
+                )))
+            }
+        }
+        if (p.admin && p.locked) {
+            add(R.drawable.ic_workspace_premium, "Recovery Code", if (p.hasRecovery) "Saved" else "Not made", SettingRow.Trail.CHEVRON) {
+                withCode(p) { act.createRecovery(p, if (p.hasRecovery) "Your old code no longer works. Save this new one." else "In case the passcode is ever forgotten.") { refresh("profile") } }
+            }
+        }
+        add(R.drawable.ic_history, "Ask Who's Watching", "", SettingRow.Trail.SWITCH) {
+            Profiles.askOnWake = !Profiles.askOnWake
+            Profiles.save(act)
+            refresh("profile")
+        }.apply { checked = Profiles.askOnWake }
+    }
+
+    /**
+     * Hold OK on a picture: name and picture for your own profile, and for an admin, roles,
+     * passcode resets and deleting. Changing someone else's profile asks for your passcode.
+     */
+    private fun profileMenu(p: Profile, q: Profile) {
+        val self = q.id == p.id
+        val a = ArrayList<Sheet.Action>()
+        val guard: (() -> Unit) -> Unit = { run -> if (self) run() else withCode(p, run) }
+        if (self || p.admin) {
+            a.add(Sheet.Action("Rename", R.drawable.ic_edit) {
+                guard {
+                    act.push(NameEntry(act, "Rename ${q.name}", q.name) { name ->
+                        if (!Profiles.rename(act, q, name)) { act.toast("A name needs at least one letter or emoji"); return@NameEntry }
+                        act.home.rebuild()
+                        refresh("profile")
+                    })
+                }
+            })
+            a.add(Sheet.Action("Change Picture", R.drawable.ic_mood) {
+                guard {
+                    act.push(AvatarPicker(act, q) {
+                        Profiles.save(act)
+                        act.home.rebuild()
+                        refresh("profile")
+                    })
+                }
+            })
+        }
+        if (p.admin && Profiles.list.size > 1) {
+            if (!self && q.locked) a.add(Sheet.Action("Reset Passcode", R.drawable.ic_lock) {
+                confirm("Reset ${q.name}'s passcode?", "${q.name} is unlocked until a new passcode is set", "Reset Passcode", R.drawable.ic_lock, "", who = q) {
+                    withCode(p) {
+                        Profiles.setCode(act, q, null)
+                        Locks.forget(act, q.id)
+                        act.home.rebuild()
+                        refresh("profile")
+                        act.toast("${q.name}'s passcode is cleared")
+                    }
+                }
+            })
+            a.add(Sheet.Action(if (q.admin) "Make Standard" else "Make Admin", R.drawable.ic_workspace_premium) { changeRole(p, q) })
+        }
+        if (Profiles.list.size > 1 && (self || p.admin)) {
+            a.add(Sheet.Action("Delete Profile", R.drawable.ic_delete) { deleteProfile(p, q) })
+        }
+        if (a.isEmpty()) { act.toast("Only an admin can change ${q.name}"); return }
+        act.push(Sheet(act, q.name, if (q.admin) "Admin" else "Standard", null, a, headerProfile = q))
+    }
+
+    /**
+     * Confirms, checks [by]'s passcode, then deletes [q]. The only admin first picks or creates the
+     * next admin. Deleting the current profile lands on a profile with no passcode, or asks who's
+     * watching next and checks that profile's passcode.
+     */
+    private fun deleteProfile(by: Profile, q: Profile) {
+        val self = q.id == Profiles.currentId
+        val lastAdmin = q.admin && Profiles.list.count { it.admin } == 1
+        val notes = listOfNotNull(
+            "Pinned apps, colours and layout for ${q.name} are removed",
+            if (lastAdmin) "Next, choose the new admin" else null,
+        )
+        confirm("Delete ${q.name}?", "This can't be undone", "Delete profile", R.drawable.ic_delete, notes.joinToString(". "), who = q) {
+            withCode(by) {
+                if (lastAdmin) chooseHeir(q) { heir -> finishDelete(q, self, heir) } else finishDelete(q, self, null)
+            }
+        }
+    }
+
+    private fun finishDelete(q: Profile, self: Boolean, heir: Profile?) {
+        if (!self) { removeNow(q, null, false); return }
+        val open = heir?.takeIf { !it.locked } ?: Profiles.landingAfter(q.id)
+        if (open != null) { removeNow(q, open, true); return }
+        // Every other profile has a passcode: someone enters theirs to finish.
+        act.push(Sheet(act, "Who's watching next?", "Enter that profile's passcode to finish", null, Profiles.list.filter { it !== q }.map { o ->
+            Sheet.Action(o.name, 0, "Has a passcode", o) {
+                act.push(PasscodeScreen(act, o, PasscodeScreen.Mode.CHECK) { act.pop(); removeNow(q, o, true) })
+            }
+        }))
+    }
+
+    private fun removeNow(q: Profile, landOn: Profile?, self: Boolean) {
+        if (!Profiles.remove(act, q.id, landOn)) return
+        if (self) act.switchProfile(Profiles.currentId)
+        act.home.rebuild()
+        refresh("profile")
+        act.toast("${q.name} is deleted")
+    }
+
+    /**
+     * Used when the only admin is leaving: picks a profile or creates one as the next admin. A
+     * profile with a passcode gets a recovery code first, shown once.
+     */
+    private fun chooseHeir(leaving: Profile, then: (Profile) -> Unit) {
+        val actions = Profiles.list.filter { it !== leaving }.map { o ->
+            Sheet.Action(o.name, 0, if (o.locked) "Has a passcode, so a recovery code is made" else "No passcode", o) {
+                Profiles.setAdmin(act, o, true)
+                if (o.locked) act.createRecovery(o, "This code unlocks ${o.name} if the passcode is forgotten. Keep it somewhere safe.") { then(o) }
+                else then(o)
+            }
+        }.toMutableList()
+        if (Profiles.list.size < Profiles.MAX) actions.add(Sheet.Action("New profile", R.drawable.ic_add, "Create the new admin") {
+            act.push(ProfileWizard(act) { name, emoji, color ->
+                val o = Profiles.add(act, name, emoji, color)
+                Profiles.setAdmin(act, o, true)
+                then(o)
+            })
+        })
+        act.push(Sheet(act, "Choose the new admin", "Someone must be able to manage profiles", null, actions))
+    }
+
+    /** Makes [q] an admin or a standard profile. There is always at least one admin. */
+    private fun changeRole(by: Profile, q: Profile) {
+        if (!Roles.canDemote(Profiles.list, q)) {
+            act.push(Dialog(act, 0, "${q.name} is the only admin",
+                "Make another profile an admin first. There is always at least one.",
+                listOf(Dialog.Button("OK", primary = true)), q))
+            return
+        }
+        val toAdmin = !q.admin
+        confirm(
+            if (toAdmin) "Make ${q.name} an admin?" else "Make ${q.name} a standard profile?",
+            if (toAdmin) "Admins can change any profile, reset passcodes and delete profiles"
+                else "Standard profiles can change only their own name, picture and passcode",
+            if (toAdmin) "Make admin" else "Make standard", R.drawable.ic_workspace_premium,
+            if (!toAdmin && q.hasRecovery) "${q.name}'s recovery code stops working" else "", who = q,
+        ) {
+            withCode(by) {
+                if (!Profiles.setAdmin(act, q, toAdmin)) return@withCode
+                refresh("profile")
+                act.toast(if (toAdmin) "${q.name} is now an admin" else "${q.name} is now a standard profile")
+            }
+        }
+    }
+
+    private fun paneSpotlight() {
+        val cfg = act.cfg
+        paneHeader("Spotlight")
+        val (a, b) = twoUp("On", "Off", cfg.spotlight, { spotlight = true }, { spotlight = false })
+        a.makeFocusable(true)
+        b.makeFocusable(true)
+        a.setOnClickListener { if (!cfg.spotlight) { cfg.spotlight = true; act.save(); act.home.rebuild(); refresh("spot") } }
+        b.setOnClickListener { if (cfg.spotlight) { cfg.spotlight = false; act.save(); act.home.rebuild(); refresh("spot") } }
+    }
+
+    private fun tileGrid(pkgs: List<String>, focusable: Boolean, onPick: ((String) -> Unit)?, top: Float = top0) {
+        val cols = 5
+        val tw = 128f
+        val pitch = 156f
+        val x0 = (PANE_W - (cols - 1) * pitch - tw) / 2
+        val tiles = ArrayList<View>()
+        for ((i, pkg) in pkgs.withIndex()) {
+            if (i >= 10) break
+            val e = act.app(pkg)
+            val tile = AppTile(act).apply {
+                label = e?.label ?: act.cfg.pinned.firstOrNull { it.pkg == pkg }?.label ?: pkg.substringAfterLast('.')
+                icon = e?.icon
+                isFocusable = focusable
+                isClickable = focusable
+                if (focusable) tag = "hidden$i"
+                onPick?.let { pick -> setOnClickListener { pick(pkg) } }
+            }
+            pane.place(tile, x0 + (i % cols) * pitch, top + (i / cols) * 200f, tw, 176f)
+            tiles.add(tile)
+        }
+        if (pkgs.size > 10) pane.place(centredText("and ${pkgs.size - 10} more", 24f, Theme.TEXT_DIM), 48f, top + 410f, PANE_W - 96f, 34f)
+        Motion.stagger(tiles, 22L)
+    }
+
+    private fun panePinned() {
+        val cfg = act.cfg
+        paneHeader("Pinned Apps")
+        if (cfg.pinned.isEmpty()) emptyState(R.drawable.ic_push_pin, "Nothing pinned yet")
+        else tileGrid(cfg.pinned.map { it.pkg }, false, null)
+
+    }
+
+    private fun dreamSummary(): String = when {
+        !ClockDream.isOn(act) -> "Off"
+        ClockDream.mode(act) == ClockDream.AMBIENT -> "Ambient"
+        else -> "Clock"
+    }
+
+    private fun paneDream() {
+        paneHeader("Screensaver")
+        val add = optionColumn(top0, "dream")
+        val on = ClockDream.isOn(act)
+        val mode = ClockDream.mode(act)
+        fun choose(m: Int) { ClockDream.setOn(act, true); ClockDream.setMode(act, m); refresh("dream") }
+        val ambient = on && mode == ClockDream.AMBIENT
+        val clock = on && mode == ClockDream.CLOCK
+        choice(add, R.drawable.ic_gradient, "Ambient", ambient) { choose(ClockDream.AMBIENT) }
+        choice(add, R.drawable.ic_schedule, "Clock", clock) { choose(ClockDream.CLOCK) }
+        choice(add, R.drawable.ic_visibility_off, "Off", !on) {
+            ClockDream.setOn(act, false); refresh("dream")
+        }
+        if (on) add(R.drawable.ic_tv, "TV Screensaver Settings", "", SettingRow.Trail.OPEN) {
+            act.openSystemSettings(android.provider.Settings.ACTION_DREAM_SETTINGS)
+        }
+    }
+
+    private fun paneSounds() {
+        paneHeader("Sounds")
+        val size = 400f
+        pane.place(SoundPad(act).apply { tag = "pad" }, (PANE_W - size) / 2, top0 + 20f, size, size)
+        pane.place(centredText("Press the arrows and OK to listen", 26f, Theme.TEXT_DIM), 48f, top0 + size + 56f, PANE_W - 96f, 36f)
+    }
+
+    private fun paneHomeRow() {
+        paneHeader("Home Row")
+        val add = optionColumn(top0, "homerow")
+        val names = arrayOf("Pinned Apps", "Recent Apps", "None")
+        val icons = intArrayOf(R.drawable.ic_push_pin, R.drawable.ic_history, R.drawable.ic_visibility_off)
+        for (i in names.indices) {
+            val on = act.cfg.homeRow == i
+            choice(add, icons[i], names[i], on) {
+                act.setHomeRow(i)
+                refresh("homerow")
+            }
+        }
+        if (act.cfg.homeRow == 1) {
+            val empty = act.cfg.recents.isEmpty()
+            add(R.drawable.ic_delete, "Clear Recents", "", SettingRow.Trail.NONE) {
+                if (act.cfg.recents.isEmpty()) return@add
+                confirm("Clear recent apps?", "The row empties until you open apps again", "Clear", R.drawable.ic_delete, "Pinned apps are kept") {
+                    act.clearRecents(); act.toast("Recents cleared"); refresh("homerow")
+                }
+            }.apply { dimmed = empty }
+        }
+    }
+
+    private fun paneSort() {
+        paneHeader("All Apps Order")
+        val add = optionColumn(top0, "sort")
+        val names = arrayOf("A to Z", "Recently Installed", "Custom")
+        val icons = intArrayOf(R.drawable.ic_sort_by_alpha, R.drawable.ic_history, R.drawable.ic_drag_indicator)
+        for (i in names.indices) {
+            val on = act.cfg.appSort == i
+            choice(add, icons[i], names[i], on) {
+                act.setAppSort(i)
+                refresh("sort")
+            }
+        }
+        section("First in Grid", top0 + 3 * 96f + 64f)
+        tileGrid(act.sortedApps().take(5).map { it.pkg }, false, null, top0 + 3 * 96f + 112f)
+    }
+
+    private fun paneHidden() {
+        val cfg = act.cfg
+        if (cfg.hidden.isEmpty()) {
+            paneHeader("Hidden Apps")
+            emptyState(R.drawable.ic_visibility_off, "No hidden apps")
+            return
+        }
+        paneHeader("Hidden Apps")
+        tileGrid(cfg.hidden.toList(), true, onPick = { pkg -> act.unhide(pkg); refresh("hidden") }, top = top0)
+
+    }
+
+    private fun paneCwHidden() {
+        val n = act.hiddenContinueCount
+        paneHeader("Hidden Titles")
+        if (n == 0) {
+            emptyState(R.drawable.ic_movie_off, "Nothing hidden from Continue watching")
+            return
+        }
+        emptyState(R.drawable.ic_movie_off, if (n == 1) "1 title hidden on this TV" else "$n titles hidden on this TV")
+
+    }
+
+    private fun paneAccount() {
+        if (!Stremio.signedIn(act)) {
+            paneHeader("Stremio Account")
+            emptyState(R.drawable.ic_qr_code_2, "Sign in with your phone", top0 + 40f)
+            val b = PillButton(act, "Sign In", R.drawable.ic_qr_code_2, true)
+            b.tag = "acct0"
+            b.setOnClickListener { act.openSignIn() }
+            val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
+            row.addView(b, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
+            pane.place(row, 0f, top0 + 300f, PANE_W, 80f)
+            return
+        }
+        val email = Stremio.email(act) ?: "Signed in"
+        paneHeader("Stremio Account")
+        val card = surfaceCard(48f, top0, PANE_W - 96f, 160f)
+        val logo = Panel(act, 48f, { Theme.elev }, false)
+        card.place(logo, 32f, 32f, 96f, 96f)
+        logo.place(ImageView(act).apply { setImageResource(R.drawable.ic_stremio) }, 20f, 20f, 56f, 56f)
+        card.place(act.label(email, 30f, Theme.TEXT, Theme.MEDIUM), 156f, 42f, PANE_W - 96f - 190f, 42f)
+        card.place(act.label("${act.continueItems.size} titles in progress", 24f, Theme.TEXT_DIM), 156f, 92f, 500f, 34f)
+        val refresh = PillButton(act, "Refresh Now", R.drawable.ic_sync, false)
+        refresh.tag = "acct0"
+        refresh.setOnClickListener { act.refreshContinue(force = true); act.toast("Refreshing your library") }
+        val out = PillButton(act, "Sign Out", R.drawable.ic_logout, false)
+        out.setOnClickListener {
+            confirm("Sign out of Stremio?", "For every profile on this TV", "Sign out", R.drawable.ic_logout,
+                "Continue watching empties until you sign in again") { act.signedOut(); refresh("account") }
+        }
+        val buttons = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false }
+        buttons.addView(refresh, LinearLayout.LayoutParams(-2, Theme.ipx(80f)).apply { rightMargin = Theme.ipx(20f) })
+        buttons.addView(out, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
+        pane.place(buttons, 48f, top0 + 196f, PANE_W - 96f, 80f)
+        Motion.stagger(listOf(card, buttons), 60L)
+    }
+
+    private fun paneBackup(export: Boolean) {
+        paneHeader(if (export) "Export Settings" else "Restore Settings")
+        val y = infoCard(listOf("Profile" to Profiles.current.name, "File" to Store.BACKUP, "Folder" to "Android/data/…/files"), top0)
+        if (backupStatus.isNotEmpty()) pane.place(act.label(backupStatus, 25f, Theme.accent, Theme.MEDIUM, 2), 56f, y + 28f, PANE_W - 112f, 70f)
+
+    }
+
+    private fun paneSetup() {
+        paneHeader("Run Setup Again")
+        emptyState(R.drawable.ic_rocket_launch, "Each step can be skipped", top0 + 60f)
+    }
+
+    private fun paneReset() {
+        paneHeader("Reset Home", "Only ${Profiles.current.name}'s Home changes.")
+        val gap = 32f
+        val colW = (PANE_W - 96f - gap) / 2
+        val cards = ArrayList<View>()
+        val resets = listOf("True Dark and glass","Motion", "Clock and weather", "Home row and recents", "Hidden apps", "All apps order")
+        val keeps = listOf("Accent colour", "Pinned apps", "App names", "Weather location", "Stremio sign-in", "Other profiles")
+        // Both cards take the taller list's height.
+        val cardH = 92f + maxOf(resets.size, keeps.size) * 48f + 24f
+        fun column(x: Float, title: String, icon: Int, items: List<String>) {
+            val card = surfaceCard(x, top1 + 8f, colW, cardH)
+            card.place(ImageView(act).apply { setImageDrawable(act.icon(icon, Theme.accent)) }, 32f, 32f, 36f, 36f)
+            card.place(act.label(title, 30f, Theme.TEXT, Theme.SEMIBOLD), 84f, 28f, colW - 110f, 42f)
+            var y = 96f
+            for (s in items) {
+                card.place(act.label(s, 24f, Theme.TEXT_DIM), 32f, y, colW - 64f, 36f)
+                y += 48f
+            }
+            cards.add(card)
+        }
+        column(48f, "Resets", R.drawable.ic_refresh, resets)
+        column(48f + colW + gap, "Keeps", R.drawable.ic_check, keeps)
+        Motion.stagger(cards, 60L)
+
+    }
+
+    private fun paneSystem(title: String, inside: List<String>, action: String) {
+        paneHeader(title)
+        section("Inside", top0)
+        val col = cardColumn()
+        col.setPadding(Theme.ipx(32f), Theme.ipx(10f), Theme.ipx(32f), Theme.ipx(10f))
+        for ((i, s) in inside.withIndex()) {
+            col.addView(act.label(s, 26f, Theme.TEXT).apply { gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(-1, Theme.ipx(64f)))
+            if (i < inside.size - 1) col.addView(View(act).apply { setBackgroundColor(Theme.withAlpha(Theme.outline, 0.6f)) }, LinearLayout.LayoutParams(-1, Theme.ipx(1.5f)))
+        }
+        val h = 20f + inside.size * 64f + (inside.size - 1) * 1.5f
+        pane.place(col, 48f, top0 + 44f, PANE_W - 96f, h)
+        val open = PillButton(act, "Open", R.drawable.ic_open_in_new, true).apply {
+            tag = "sysopen"
+            setOnClickListener { act.openSystemSettings(action) }
+        }
+        pane.place(open, 48f, top0 + 44f + h + 36f, -1f, 80f)
+        Motion.stagger(listOf(col, open), 50L)
+    }
+
+    /** Shows the support link as a QR code. */
+    private fun paneKofi() {
+        paneHeader("Support Scene")
+        val card = Panel(act, 32f, { android.graphics.Color.WHITE })
+        pane.place(card, (PANE_W - 360f) / 2, top1 + 24f, 360f, 360f)
+        card.place(ImageView(act).apply { setImageResource(R.drawable.qr_kofi) }, 20f, 20f, 320f, 320f)
+        pane.place(centredText("Scan with your phone", 28f, Theme.TEXT, Theme.SEMIBOLD), 48f, top1 + 412f, PANE_W - 96f, 40f)
+        pane.place(centredText("ko-fi.com/robbydock", 24f, Theme.TEXT_DIM), 48f, top1 + 456f, PANE_W - 96f, 34f)
+        Motion.pop(card)
+    }
+
+    private fun paneAbout() {
+        paneHeader("About Scene")
+        val am = act.getSystemService(ActivityManager::class.java)
+        val mi = ActivityManager.MemoryInfo().also { am?.getMemoryInfo(it) }
+        val own = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
+        var y = infoCard(listOf(
+            "Version" to versionName(),
+            "Device" to if (Build.MODEL.startsWith(Build.MANUFACTURER, ignoreCase = true)) Build.MODEL else "${Build.MANUFACTURER} ${Build.MODEL}",
+            "Android" to "${Build.VERSION.RELEASE}  ·  ${Build.VERSION.SECURITY_PATCH}",
+        ), top0) + 36f
+
+        // Memory: this launcher, everything else, free.
+        val mb = 1024L * 1024
+        val homeMem = own.totalPss * 1024L
+        section("Memory  ·  ${mi.availMem / mb} MB free of ${mi.totalMem / mb} MB", y)
+        pane.place(UsageBar(act).apply {
+            parts = listOf(
+                UsageBar.Part("Scene ${homeMem / mb} MB", homeMem, Theme.accent),
+                UsageBar.Part("Other apps", (mi.totalMem - mi.availMem - homeMem).coerceAtLeast(0), Theme.withAlpha(Theme.TEXT, 0.45f)),
+                UsageBar.Part("Free", mi.availMem, Theme.withAlpha(Theme.TEXT, 0.12f)),
+            )
+        }, 56f, y + 44f, PANE_W - 112f, 80f)
+        y += 160f
+
+        // Storage: filled in off the main thread.
+        val storeTitle = act.label("Storage", 24f, Theme.TEXT_DIM, Theme.SEMIBOLD)
+        pane.place(storeTitle, 56f, y, PANE_W - 112f, 32f)
+        val storeBar = UsageBar(act)
+        pane.place(storeBar, 56f, y + 44f, PANE_W - 112f, 80f)
+        val clear = PillButton(act, "Clear artwork cache", R.drawable.ic_delete, false).apply { tag = "about0" }
+        pane.place(clear, 48f, y + 148f, -1f, 72f)
+        val fillStorage = {
+            Net.run({
+                val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+                Triple(st.totalBytes, st.availableBytes, Images.diskUsage())
+            }) { r ->
+                if (r == null || current != "about") return@run
+                val (total, free, cache) = r
+                val gb = 1024.0 * 1024 * 1024
+                storeTitle.text = "Storage  ·  %.1f GB free of %.1f GB".format(free / gb, total / gb)
+                storeBar.parts = listOf(
+                    UsageBar.Part("Artwork ${cache.first / mb} MB", cache.first, Theme.accent),
+                    UsageBar.Part("Apps and data", (total - free - cache.first).coerceAtLeast(0), Theme.withAlpha(Theme.TEXT, 0.45f)),
+                    UsageBar.Part("Free", free, Theme.withAlpha(Theme.TEXT, 0.12f)),
+                )
+            }
+        }
+        fillStorage()
+        clear.setOnClickListener {
+            Images.trimMemory()
+            Net.run({ Images.clearDisk() }) { act.toast("Artwork cache cleared"); fillStorage() }
+        }
+        paneHint("Material Symbols  ·  Open-Meteo  ·  Cinemeta")
+    }
+}

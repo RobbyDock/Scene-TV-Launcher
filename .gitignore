@@ -1,0 +1,17 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+/build
+/app/build
+/app/release
+*.apk
+*.aab
+*.jks
+*.keystore
+.kotlin
+.DS_Store
+
+# Device snapshots and the local device address
+/snapshots/
+/tools/device.local

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12 and later: the system splash uses the Home background. -->
+    <style name="Theme.Scene" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/scene_bg</item>
+        <item name="android:colorBackground">@color/scene_bg</item>
+        <item name="android:navigationBarColor">@color/scene_bg</item>
+        <item name="android:statusBarColor">@color/scene_bg</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowContentTransitions">false</item>
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:ambientShadowAlpha">0.22</item>
+        <item name="android:spotShadowAlpha">0.55</item>
+        <item name="android:windowSplashScreenBackground">@color/scene_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/scene_bg</item>
+    </style>
+</resources>

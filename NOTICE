@@ -1,0 +1,59 @@
+Scene
+Copyright 2026 Robert Dock
+
+Scene's own source code is licensed under the GNU General Public License
+version 3 or later. See the LICENSE file. Any distributed modified version
+must remain free and open source under the same terms.
+
+The third-party material listed below is not relicensed under the GPL. Each
+item keeps its own license and is used with thanks.
+
+================================================================================
+Third-party material
+================================================================================
+
+Scene has no third-party runtime libraries. It is built with:
+
+Apache License 2.0
+  * Kotlin and the Kotlin standard library    (JetBrains)
+  * Android Gradle Plugin and Android SDK     (Google)
+  * Material Symbols Rounded icons            (Google)
+    https://github.com/google/material-design-icons
+
+Eclipse Public License 1.0, tests only, not shipped in the app
+  * JUnit 4                                   (JUnit contributors)
+
+Supplied by the device, not bundled
+  * Roboto                                    (Google, Apache License 2.0)
+  * Noto Color Emoji, used for profile
+    pictures                                  (Google, SIL Open Font License 1.1)
+
+The QR code encoder in Qr.kt is an original implementation of ISO/IEC 18004.
+
+================================================================================
+Services
+================================================================================
+
+Scene is an independent project and is not affiliated with or endorsed by any
+of the services below.
+
+  * Stremio: library, watch progress and sign-in.
+    https://www.stremio.com
+  * Cinemeta and MetaHub: titles, details and artwork.
+  * Open-Meteo: weather and city search, used under CC BY 4.0.
+    https://open-meteo.com
+
+================================================================================
+Content
+================================================================================
+
+Titles, posters and artwork shown in the app come from the services above and
+belong to their rights holders. Scene hosts no content.
+
+The screenshots in docs/screenshots show the app's demo mode. The film and
+series artwork and the app icons in them are shown for illustration only and
+belong to their respective owners. Scene ships none of these icons.
+
+Full license texts for these components are available from their respective
+projects. A copy of the GNU General Public License v3 that governs Scene is
+included in the LICENSE file at the root of this repository.
