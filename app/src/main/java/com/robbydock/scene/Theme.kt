@@ -59,10 +59,31 @@ object Theme {
     const val FOCUS_SCALE = 1.06f
     val EASE = PathInterpolator(0.22f, 0.25f, 0f, 1f)
 
-    val REGULAR: Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-    val MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    val SEMIBOLD: Typeface = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.SANS_SERIF, 600, false) else MEDIUM
-    val BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
+    // Outfit is bundled so text measures the same on every device; the system font is the fallback
+    // until init runs, and for any character Outfit lacks.
+    var REGULAR: Typeface = Typeface.create("sans-serif", Typeface.NORMAL); private set
+    var MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); private set
+    var SEMIBOLD: Typeface = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.SANS_SERIF, 600, false) else MEDIUM; private set
+    var BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD); private set
+
+    private fun outfit(ctx: Context, weight: Int): Typeface? = try {
+        Typeface.Builder(ctx.assets, "fonts/Outfit.ttf")
+            .setFontVariationSettings("'wght' $weight")
+            .setWeight(weight)
+            .setFallback("sans-serif")
+            .build()
+    } catch (e: Exception) { null }
+
+    private fun loadFonts(ctx: Context) {
+        if (fontsLoaded) return
+        outfit(ctx, 400)?.let { REGULAR = it }
+        outfit(ctx, 500)?.let { MEDIUM = it }
+        outfit(ctx, 600)?.let { SEMIBOLD = it }
+        outfit(ctx, 700)?.let { BOLD = it }
+        fontsLoaded = true
+    }
+
+    private var fontsLoaded = false
 
     var accentIndex = 0
         private set
@@ -93,6 +114,7 @@ object Theme {
         val w = maxOf(m.widthPixels, m.heightPixels)
         val h = minOf(m.widthPixels, m.heightPixels)
         u = minOf(w / 1920f, h / 1080f)
+        loadFonts(ctx.applicationContext)
     }
 
     fun apply(accentIdx: Int, dark: Boolean, glassAlpha: Float) {
@@ -141,6 +163,22 @@ object Theme {
         val g = Color.green(from) + (Color.green(to) - Color.green(from)) * t
         val b = Color.blue(from) + (Color.blue(to) - Color.blue(from)) * t
         return Color.argb(255, r.toInt(), g.toInt(), b.toInt())
+    }
+
+    /** Second colour for duo-tone fills: a nearby hue, warm colours lean pink and cool colours lean blue or magenta. */
+    fun duo(c: Int): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(c, hsv)
+        val warm = hsv[0] < 90f || hsv[0] > 300f
+        hsv[0] = (hsv[0] + if (warm) -42f else 55f + 360f) % 360f
+        hsv[1] = (hsv[1] * 1.12f).coerceAtMost(1f)
+        hsv[2] *= 0.92f
+        return Color.HSVToColor(hsv)
+    }
+
+    /** Fills [p] with the accent duo tone across the box, top left to bottom right. Clear the shader after drawing. */
+    fun accentFill(p: android.graphics.Paint, l: Float, t: Float, r: Float, b: Float) {
+        p.shader = android.graphics.LinearGradient(l, t, r, b, accent, duo(accent), android.graphics.Shader.TileMode.CLAMP)
     }
 
     fun withAlpha(c: Int, a: Float) = (c and 0x00FFFFFF) or ((a.coerceIn(0f, 1f) * 255).toInt() shl 24)

@@ -106,8 +106,10 @@ class HomeActivity : Activity() {
         Profiles.load(this)
         val saved = Store.load(this)
         cfg = saved ?: defaultConfig().also { Store.save(this, it) }
-        // Marks an existing install as set up.
-        if (saved != null && !statePrefs().contains("setupDone")) statePrefs().edit().putBoolean("setupDone", true).apply()
+        // A first run records that setup is still to do, so a restart mid-setup resumes it.
+        // An install from before this flag existed counts as set up.
+        if (saved == null) statePrefs().edit().putBoolean("setupDone", false).apply()
+        else if (!statePrefs().contains("setupDone")) statePrefs().edit().putBoolean("setupDone", true).apply()
         // Copies the saved accent to the profile colour.
         if (Profiles.current.color != cfg.accent) { Profiles.current.color = cfg.accent; Profiles.save(this) }
         Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
@@ -129,6 +131,7 @@ class HomeActivity : Activity() {
         home.focusDefault()
         if (!statePrefs().getBoolean("setupDone", false)) push(SetupScreen(this))
         else if (isVoiceIntent(intent)) openSearch(true)
+        else if (intent?.action == Remap.ACTION) remoteAction(intent)
         else if (Profiles.askOnWake && Profiles.list.size > 1) push(ProfilePicker(this))
         registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
         if (savedInstanceState == null && cfg.splash && Theme.motion != 2) showSplash()
@@ -153,6 +156,9 @@ class HomeActivity : Activity() {
         syncLibrary()
         Net.main.postDelayed(syncTick, 20_000L)
         refreshWeather(force = false)
+        ClockDream.select(this)
+        // Recent apps may have changed while another app was open.
+        if (cfg.showRecent) home.appsChanged()
         (overlays.lastOrNull()?.first as? QuickPanel)?.onReturn()
         if (askProfileOnResume) {
             askProfileOnResume = false
@@ -219,7 +225,18 @@ class HomeActivity : Activity() {
         while (overlays.isNotEmpty() && overlays.last().first !is SetupScreen) pop()
         if (overlays.isNotEmpty()) return
         home.goTop()
-        if (isVoiceIntent(intent) && statePrefs().getBoolean("setupDone", false)) openSearch(true)
+        if (!statePrefs().getBoolean("setupDone", false)) return
+        if (isVoiceIntent(intent)) openSearch(true)
+        else if (intent.action == Remap.ACTION) remoteAction(intent)
+    }
+
+    /** Opens the part of Scene a remapped remote button asks for. */
+    private fun remoteAction(i: Intent) {
+        when (i.getStringExtra(Remap.EXTRA)) {
+            Remap.QUICK -> push(QuickPanel(this))
+            Remap.SEARCH -> openSearch(false)
+            Remap.VOICE -> openSearch(true)
+        }
     }
 
     /** Intents sent by the remote's mic. */
@@ -312,11 +329,12 @@ class HomeActivity : Activity() {
 
     fun runSetup() {
         while (overlays.isNotEmpty()) pop()
+        statePrefs().edit().remove("setupStep").apply()
         push(SetupScreen(this))
     }
 
     fun setupDone() {
-        statePrefs().edit().putBoolean("setupDone", true).apply()
+        statePrefs().edit().putBoolean("setupDone", true).remove("setupStep").apply()
         popTo(home)
         while (overlays.isNotEmpty()) pop()
         refreshWeather(force = true)
@@ -421,7 +439,7 @@ class HomeActivity : Activity() {
             pinned = Demo.pins { Apps.isInstalled(pm, it) }
             accent = Profiles.current.color
             hidden.clear(); hidden.add(Config.STREMIO_BOOT); cwHidden.clear(); names.clear(); recents.clear(); appOrder.clear()
-            homeRow = 0; spotlight = true; clockOn = true; showDate = true; weatherOn = true; weatherDetail = 0
+            showPinned = true; showRecent = false; spotlight = true; clockOn = true; showDate = true; weatherOn = true; weatherDetail = 0
             city = "Chicago"
         }
         weather = Demo.weather()
@@ -520,7 +538,12 @@ class HomeActivity : Activity() {
                 checkNewEpisodes(list)
             } else {
                 continueError = continueItems.isEmpty()
-                if (!Stremio.signedIn(this)) setContinue(emptyList())
+                if (!Stremio.signedIn(this)) {
+                    // Stremio ended the session, for example after a password change.
+                    continueError = false
+                    setContinue(emptyList())
+                    if (overlays.none { it.first is SetupScreen || it.first is SignInScreen }) push(SignInScreen(this, expired = true))
+                }
             }
             home.continueChanged()
         }
@@ -532,10 +555,18 @@ class HomeActivity : Activity() {
         if (event.action == android.view.KeyEvent.ACTION_UP && event.repeatCount == 0 &&
             (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == android.view.KeyEvent.KEYCODE_ENTER) &&
             currentFocus !is SoundPad) Sounds.ok(this)
+        // The Menu key on remotes that have one opens the same options as holding OK.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_MENU) {
+            val f = currentFocus
+            if (f != null && f.isLongClickable) {
+                if (event.action == android.view.KeyEvent.ACTION_UP && event.repeatCount == 0) f.performLongClick()
+                return true
+            }
+        }
         return super.dispatchKeyEvent(event)
     }
 
-    private fun statePrefs() = getSharedPreferences("state", MODE_PRIVATE)
+    fun statePrefs() = getSharedPreferences("state", MODE_PRIVATE)
 
     /**
      * Weather follows this TV's location when allowed. The permission is asked once; the saved
@@ -749,7 +780,7 @@ class HomeActivity : Activity() {
     fun launch(pkg: String) {
         if (Demo.isSample(pkg)) { toast("Sample app"); return }
         val i = Apps.launchIntent(packageManager, pkg)
-        if (i == null) { toast("Not installed"); return }
+        if (i == null) { if (pkg == Config.STREMIO) installStremio() else toast("Not installed"); return }
         try { startActivity(i); noteRecent(pkg) } catch (e: Exception) { toast("Cannot open this app") }
     }
 
@@ -758,20 +789,35 @@ class HomeActivity : Activity() {
         if (pkg == packageName) return
         cfg.recents.remove(pkg)
         cfg.recents.add(0, pkg)
+        cfg.recentsRemoved.remove(pkg)
         while (cfg.recents.size > Config.MAX_RECENTS) cfg.recents.removeAt(cfg.recents.size - 1)
         save()
     }
 
-    /** Recent apps to show: installed and not hidden. */
-    fun recentApps(): List<String> = cfg.recents.filter { it !in cfg.hidden && (apps.isEmpty() || app(it) != null) }
+    /** Recent apps to show: Android's usage history when allowed, else apps opened from Scene. Installed and not hidden. */
+    fun recentApps(): List<String> {
+        val used = Apps.recentlyUsed(this)
+        val source = if (used.isNotEmpty()) used.filter { (pkg, at) -> at > (cfg.recentsRemoved[pkg] ?: 0L) }.map { it.first } else cfg.recents
+        return source.filter { it != packageName && it !in cfg.hidden && it != Config.STREMIO_BOOT && (apps.isEmpty() || app(it) != null) }
+            .take(Config.MAX_RECENTS)
+    }
 
-    fun setHomeRow(mode: Int) {
-        cfg.homeRow = mode.coerceIn(0, 2)
+    /** Opens Android's usage access page so Scene can see apps opened outside it. */
+    fun openUsageAccess() {
+        val i = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+        if (!start(i, "")) openSystemSettings(Settings.ACTION_SETTINGS)
+    }
+
+    fun setHomeRows(pinned: Boolean, recent: Boolean) {
+        cfg.showPinned = pinned
+        cfg.showRecent = recent
         save()
         home.rebuild()
     }
 
     fun clearRecents() {
+        val now = System.currentTimeMillis()
+        for (p in recentApps()) cfg.recentsRemoved[p] = now
         cfg.recents.clear()
         save()
         home.rebuild()
@@ -780,11 +826,20 @@ class HomeActivity : Activity() {
     fun start(i: Intent, failure: String = "Not available on this device"): Boolean = try {
         startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true
     } catch (e: Exception) {
-        toast(failure); false
+        if (failure.isNotEmpty()) toast(failure)
+        false
     }
 
     fun openDetail(type: String, id: String, videoId: String? = null) {
-        if (!start(Stremio.detailIntent(type, id, videoId), "Stremio is not installed")) return
+        if (!Apps.isInstalled(packageManager, Config.STREMIO)) { installStremio(); return }
+        if (start(Stremio.detailIntent(type, id, videoId), "Stremio is not installed")) noteRecent(Config.STREMIO)
+    }
+
+    /** Opens Stremio's Play Store page so it can be installed. */
+    fun installStremio() {
+        toast("Stremio isn't installed. Opening the Play Store.")
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${Config.STREMIO}"))
+        if (!start(market, "")) start(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${Config.STREMIO}")), "The Play Store isn't available")
     }
 
     /**
@@ -802,6 +857,28 @@ class HomeActivity : Activity() {
             }
         }
         start(Intent(Settings.ACTION_SETTINGS))
+    }
+
+    /** A dedicated Sound page when the box has one, otherwise Display & Sound. */
+    fun openSoundSettings() {
+        val i = Intent(Settings.ACTION_SOUND_SETTINGS)
+        val own = packageManager.queryIntentActivities(i, 0).firstOrNull { it.activityInfo.packageName != TV_SETTINGS }
+        if (own != null) {
+            try {
+                startActivity(i.setClassName(own.activityInfo.packageName, own.activityInfo.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            } catch (e: Exception) {
+                // falls back below
+            }
+        }
+        openSystemSettings(Settings.ACTION_SOUND_SETTINGS)
+    }
+
+    /** Display settings. Android TV keeps them on its Display & Sound page. */
+    fun openDisplaySettings() {
+        val i = Intent("android.settings.DISPLAY_SETTINGS")
+        if (i.resolveActivity(packageManager) != null) openSystemSettings(i.action!!)
+        else openSystemSettings(Settings.ACTION_SOUND_SETTINGS)
     }
 
     fun appInfo(pkg: String) = start(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
@@ -938,7 +1015,7 @@ class HomeActivity : Activity() {
             a.add(Sheet.Action("Pin to home", R.drawable.ic_push_pin, "Add to the end of Pinned apps") { pin(pkg, label) })
         }
         if (fromRecent) a.add(Sheet.Action("Remove from recents", R.drawable.ic_history, "It shows again after you next open it") {
-            cfg.recents.remove(pkg); save(); home.rebuild()
+            cfg.recents.remove(pkg); cfg.recentsRemoved[pkg] = System.currentTimeMillis(); save(); home.rebuild()
         })
         a.add(Sheet.Action("Hide from Home", R.drawable.ic_visibility_off, "Leaves Home, All apps and search. Undo in Settings.") { hide(pkg) })
         if (Apps.isInstalled(packageManager, "com.android.vending")) {

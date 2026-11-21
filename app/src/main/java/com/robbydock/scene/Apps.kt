@@ -21,6 +21,30 @@ object Apps {
 
     fun isInstalled(pm: PackageManager, pkg: String) = launchIntent(pm, pkg) != null
 
+    /** True when the user has allowed Scene to read which apps were used. */
+    fun hasUsageAccess(ctx: Context): Boolean {
+        val ops = ctx.getSystemService(android.app.AppOpsManager::class.java) ?: return false
+        @Suppress("DEPRECATION")
+        val mode = ops.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), ctx.packageName)
+        return mode == android.app.AppOpsManager.MODE_ALLOWED
+    }
+
+    /** Apps used in the last week with the time last used, most recent first. Empty without usage access. */
+    fun recentlyUsed(ctx: Context): List<Pair<String, Long>> {
+        if (!hasUsageAccess(ctx)) return emptyList()
+        val usm = ctx.getSystemService(android.app.usage.UsageStatsManager::class.java) ?: return emptyList()
+        val now = System.currentTimeMillis()
+        return try {
+            usm.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_DAILY, now - 7 * 86_400_000L, now)
+                .filter { it.lastTimeUsed > 0 && it.totalTimeInForeground > 2_000 }
+                .groupBy { it.packageName }
+                .map { (pkg, list) -> pkg to list.maxOf { it.lastTimeUsed } }
+                .sortedByDescending { it.second }
+        } catch (e: SecurityException) {
+            emptyList()
+        }
+    }
+
     fun label(pm: PackageManager, pkg: String): String? = try {
         pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
     } catch (e: PackageManager.NameNotFoundException) {

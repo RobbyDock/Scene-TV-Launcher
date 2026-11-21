@@ -82,6 +82,7 @@ class ProfileWizard(
 
     private fun preview(size: Float, x: Float, y: Float, e: String = emoji, c: Int = color): AvatarView {
         val av = AvatarView(act).apply {
+            glow = true
             letter = Guard.initial(name); emoji = e; colorIndex = c
         }
         place(av, x, y, size, size)

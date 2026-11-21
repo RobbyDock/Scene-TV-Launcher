@@ -320,23 +320,31 @@ object Stremio {
 
     private var popularCache: Pair<Long, List<SearchHit>>? = null
 
-    /** Cinemeta's top films and series, Cached for six hours. */
-    fun popular(): List<SearchHit> {
-        popularCache?.let { (t, list) -> if (System.currentTimeMillis() - t < 6 * 3600_000L) return list }
-        val list = searchUncached(null)
-        if (list.isNotEmpty()) popularCache = System.currentTimeMillis() to list
+    /** Cinemeta lists its top titles in pages of this many per type. */
+    const val POPULAR_PAGE = 50
+
+    /** One page of Cinemeta's top films and series, mixed. The first page is cached for six hours. */
+    fun popular(page: Int = 0): List<SearchHit> {
+        if (page == 0) popularCache?.let { (t, list) -> if (System.currentTimeMillis() - t < 6 * 3600_000L) return list }
+        val list = searchUncached(null, page * POPULAR_PAGE)
+        if (page == 0 && list.isNotEmpty()) popularCache = System.currentTimeMillis() to list
         return list
     }
 
-    /** Searches Cinemeta, or lists its top titles when [query] is null. */
-    private fun searchUncached(query: String?): List<SearchHit> {
-        val path = if (query == null) "" else "/search=" + enc(query.trim())
+    /** Searches Cinemeta, or lists its top titles from [skip] when [query] is null. */
+    private fun searchUncached(query: String?, skip: Int = 0): List<SearchHit> {
+        val path = when {
+            query != null -> "/search=" + enc(query.trim())
+            skip > 0 -> "/skip=$skip"
+            else -> ""
+        }
+        val cap = if (query == null) POPULAR_PAGE else 10
         val out = ArrayList<SearchHit>()
         for (type in arrayOf("series", "movie")) {
             try {
                 val o = Net.getJson("${CINEMETA}catalog/$type/top$path.json")
                 val a = o.optJSONArray("metas") ?: continue
-                for (i in 0 until minOf(a.length(), 10)) {
+                for (i in 0 until minOf(a.length(), cap)) {
                     val m = a.optJSONObject(i) ?: continue
                     out.add(
                         SearchHit(

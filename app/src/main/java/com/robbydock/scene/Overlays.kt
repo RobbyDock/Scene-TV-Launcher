@@ -133,6 +133,7 @@ class Dialog(
         }
         if (profile != null) {
             val av = AvatarView(act).apply {
+                glow = true
                 letter = profile.initial; emoji = profile.emoji; colorIndex = profile.color; locked = profile.locked
                 isFocusable = false
             }
@@ -187,6 +188,7 @@ class Sheet(
             tx = 188f
         } else if (headerProfile != null) {
             val av = AvatarView(act).apply {
+                glow = true
                 letter = headerProfile.initial; emoji = headerProfile.emoji; colorIndex = headerProfile.color; locked = headerProfile.locked
                 isFocusable = false
             }
@@ -254,6 +256,79 @@ class AppPicker(act: HomeActivity) : OverlayBase(act, 0.72f, haze = true) {
     }
 }
 
+// ---------------------------------------------------------------- remote button picker
+
+/** Chooses the app a remote button opens, or keeps its usual action. */
+@SuppressLint("ViewConstructor")
+class RemapPicker(
+    act: HomeActivity,
+    private val button: Remap.Button,
+    private val learned: Boolean,
+    private val presses: Int = 1,
+    private val done: () -> Unit,
+) : OverlayBase(act, 0.72f, haze = true) {
+    init {
+        place(act.label("${button.name} button", 64f, Theme.TEXT, Theme.BOLD), 96f, 72f, 1200f, 80f)
+        val note = if (presses > 1 && Remap.target(act, button.key) == null)
+            "Choose what this does. With a double or triple press set, a single press only does what you pick for it."
+        else "Choose what this does"
+        place(act.label(note, 26f, Theme.TEXT_DIM), 96f, 160f, 1700f, 36f)
+
+        // Single, double and triple press each have their own choice.
+        val tabs = LinearLayout(act).apply { clipChildren = false; clipToPadding = false }
+        var current: View? = null
+        for ((n, name) in listOf(1 to "Press", 2 to "Double press", 3 to "Triple press")) {
+            val set = Remap.target(act, button.key, n) != null
+            val tab = PillButton(act, if (set) "$name •" else name, 0, n == presses)
+            tab.setOnClickListener {
+                if (n == presses) return@setOnClickListener
+                act.pop()
+                act.push(RemapPicker(act, button, learned, n, done))
+            }
+            tabs.addView(tab, LinearLayout.LayoutParams(-2, Theme.ipx(76f)).apply { rightMargin = Theme.ipx(20f) })
+            if (n == presses) current = tab
+        }
+        place(tabs, 96f, 220f, 1700f, 90f)
+
+        val target = Remap.target(act, button.key, presses)
+        val actions = LinearLayout(act).apply { clipChildren = false; clipToPadding = false }
+        fun action(text: String, icon: Int, chosen: Boolean, click: () -> Unit) {
+            val b = PillButton(act, text, icon, chosen)
+            b.setOnClickListener { click() }
+            actions.addView(b, LinearLayout.LayoutParams(-2, Theme.ipx(76f)).apply { rightMargin = Theme.ipx(20f) })
+        }
+        action(if (presses == 1) "Usual action" else "Nothing", R.drawable.ic_settings_remote, target == null) { pick(null) }
+        for (t in Remap.SCENE_TARGETS) action(Remap.label(t, act.apps), Remap.icon(t), target == t) { pick(t) }
+        if (learned && presses == 1) action("Forget button", R.drawable.ic_delete, false) { Remap.forget(act, button.key); act.pop(); done() }
+        place(actions, 96f, 320f, 1700f, 90f)
+
+        val list = act.apps.filter { it.pkg !in act.cfg.hidden && it.pkg != act.packageName }
+        val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
+        val grid = FrameLayout(act).apply { clipChildren = false }
+        val cols = 8
+        val pitchX = HomeScreen.TILE + HomeScreen.TILE_GAP
+        val pitchY = HomeScreen.TILE_H + 40f
+        val rows = (list.size + cols - 1) / cols
+        scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
+        place(act.clipBox(scroll), 0f, 420f, 1920f, 660f)
+        for ((i, e) in list.withIndex()) {
+            val tile = AppTile(act).apply {
+                label = e.label
+                icon = e.icon
+                setOnClickListener { pick(e.pkg) }
+            }
+            grid.place(tile, 96f + (i % cols) * pitchX, 24f + (i / cols) * pitchY, HomeScreen.TILE, HomeScreen.TILE_H)
+        }
+        post { current?.requestFocus() }
+    }
+
+    private fun pick(target: String?) {
+        Remap.setTarget(act, button.key, target, presses)
+        act.pop()
+        done()
+    }
+}
+
 // ---------------------------------------------------------------- location picker
 
 @SuppressLint("ViewConstructor")
@@ -318,7 +393,7 @@ class LocationPicker(act: HomeActivity, private val done: () -> Unit) : OverlayB
 
 /** Stremio link-code sign-in: QR plus a short code, polled until approved. */
 @SuppressLint("ViewConstructor")
-class SignInScreen(act: HomeActivity) : OverlayBase(act, 0.8f, haze = true), HomeActivity.Closable {
+class SignInScreen(act: HomeActivity, expired: Boolean = false) : OverlayBase(act, 0.8f, haze = true), HomeActivity.Closable {
     private val qr = ImageView(act).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
     private val codeRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL }
     private val status = act.label("Getting a code…", 26f, Theme.TEXT_DIM)
@@ -333,7 +408,12 @@ class SignInScreen(act: HomeActivity) : OverlayBase(act, 0.8f, haze = true), Hom
         val qrPanel = Panel(act, 40f, { android.graphics.Color.WHITE })
         place(qrPanel, 330f, 330f, 420f, 420f)
         qrPanel.place(qr, 30f, 30f, 360f, 360f)
-        place(act.label("Sign in to Stremio", 64f, Theme.TEXT, Theme.BOLD), 870f, 268f, 980f, 80f)
+        place(act.label(if (expired) "Sign in to Stremio again" else "Sign in to Stremio", 64f, Theme.TEXT, Theme.BOLD), 870f, 268f, 980f, 80f)
+        if (expired) {
+            // Shown when Stremio ends the session, such as after a password change.
+            place(act.label("Your Stremio sign-in has ended. This can happen after a password change. Your settings are safe.",
+                28f, Theme.accent, Theme.MEDIUM, 2), 870f, 170f, 980f, 84f)
+        }
         val steps = listOf("Scan the code with your phone camera", "Or open link.stremio.com and enter this code", "Approve the sign-in on your phone")
         for ((i, s) in steps.withIndex()) {
             val y = 380f + i * 78f

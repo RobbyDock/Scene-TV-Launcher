@@ -178,7 +178,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             checked = cfg.spotlight
             setOnClickListener { cfg.spotlight = !cfg.spotlight; act.save(); act.home.rebuild(); refresh("spot") }
         }
-        row("homerow", R.drawable.ic_apps, "Home Row", arrayOf("Pinned apps", "Recent apps", "None")[cfg.homeRow]) { paneHomeRow() }.apply {
+        row("homerow", R.drawable.ic_apps, "Home Row", homeRowSummary()) { paneHomeRow() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("homerow0")?.requestFocus() }
         }
         row("pins", R.drawable.ic_push_pin, "Pinned Apps", "${cfg.pinned.size} pinned") { panePinned() }.apply {
@@ -267,6 +267,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         group("Device")
         row("dream", R.drawable.ic_schedule, "Screensaver", dreamSummary()) { paneDream() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("dream0")?.requestFocus() }
+        }
+        row("remote", R.drawable.ic_settings_remote, "Remote Buttons", remoteSummary()) { paneRemote() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("remote0")?.requestFocus() }
         }
         systemRow("sys", R.drawable.ic_settings, "System Settings", Settings.ACTION_SETTINGS,
             listOf("Accounts", "Date, Time & Language", "Privacy", "Device Info & Updates"))
@@ -657,7 +660,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 trail = SettingRow.Trail.CHEVRON
                 divider = col.childCount > 0
                 this.tag = tag
-                alpha = if (enabled) 1f else 0.45f
+                dimmed = !enabled
                 setOnClickListener { if (enabled) click(tag) }
             }
             col.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
@@ -670,7 +673,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 checked = on
                 divider = col.childCount > 0
                 this.tag = tag
-                alpha = if (enabled) 1f else 0.45f
+                dimmed = !enabled
                 setOnClickListener {
                     if (!enabled) return@setOnClickListener
                     flip()
@@ -1082,9 +1085,83 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         choice(add, R.drawable.ic_visibility_off, "Off", !on) {
             ClockDream.setOn(act, false); refresh("dream")
         }
-        if (on) add(R.drawable.ic_tv, "TV Screensaver Settings", "", SettingRow.Trail.OPEN) {
-            act.openSystemSettings(android.provider.Settings.ACTION_DREAM_SETTINGS)
+        if (!on) return
+        val y = top0 + 3 * 112f + 40f
+        if (ClockDream.isSelected(act)) {
+            section("Starts after the TV's sleep timer", y)
+        } else {
+            // Android TV has no screensaver picker, so Scene needs one permission to select itself.
+            section("Not active yet", y)
+            pane.place(act.label("Android needs a one-time permission before Scene can be the screensaver. From a computer, run:",
+                24f, Theme.TEXT_DIM, Theme.REGULAR, 3), 56f, y + 44f, PANE_W - 112f, 100f)
+            val cmd = Panel(act, Theme.R_CHIP, { Theme.surface }, false)
+            cmd.place(act.label("adb shell pm grant ${act.packageName} android.permission.WRITE_SECURE_SETTINGS",
+                21f, Theme.TEXT, android.graphics.Typeface.MONOSPACE, 2), 24f, 14f, PANE_W - 112f - 48f, 64f)
+            pane.place(cmd, 48f, y + 152f, PANE_W - 96f, 92f)
+            pane.place(act.label("Then open this page again.", 24f, Theme.TEXT_DIM), 56f, y + 262f, PANE_W - 112f, 36f)
         }
+    }
+
+    private fun remoteSummary(): String {
+        if (!Remap.isEnabled(act)) return "Off"
+        val n = Remap.buttons(act).count { Remap.isMapped(act, it.key) }
+        if (n == 0 && Remap.homeOpensScene(act)) return "Home opens Scene"
+        return if (n == 0) "No buttons changed" else if (n == 1) "1 button changed" else "$n buttons changed"
+    }
+
+    private fun paneRemote() {
+        paneHeader("Remote Buttons", "Choose what the app buttons on your remote open.")
+        val add = optionColumn(top1 + 20f, "remote")
+        val on = Remap.isEnabled(act)
+        if (!on) {
+            add(R.drawable.ic_accessibility_new, "Turn On in Accessibility", "", SettingRow.Trail.OPEN) {
+                try {
+                    act.startActivity(android.content.Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } catch (e: Exception) {
+                    act.toast("Open System settings, then Accessibility")
+                }
+            }
+        }
+        if (!on) {
+            pane.place(act.label("Find Scene Remote Buttons under Services and turn it on. Scene only reacts to buttons you change here.",
+                24f, Theme.TEXT_DIM, Theme.REGULAR, 3), 56f, PANE_H - 150f, PANE_W - 112f, 100f)
+        }
+        add(R.drawable.ic_home, "Home Opens Scene", "", SettingRow.Trail.SWITCH) {
+            Remap.setHomeOpensScene(act, !Remap.homeOpensScene(act))
+            refresh("remote")
+        }.apply { checked = Remap.homeOpensScene(act); subtitle = "Long press Home is not available while on"; dimmed = !on }
+        val known = Remap.knownButtons().map { it.key }
+        for (b in Remap.buttons(act)) {
+            fun name(n: Int) = Remap.target(act, b.key, n)?.let { Remap.label(it, act.apps) }
+            val first = name(1) ?: if (Remap.hasMulti(act, b.key)) "Nothing" else "Usual action"
+            val value = listOfNotNull(first, name(2)?.let { "2× $it" }, name(3)?.let { "3× $it" }).joinToString(" · ")
+            add(R.drawable.ic_settings_remote, "${b.name} Button", value, SettingRow.Trail.VALUE) {
+                act.push(RemapPicker(act, b, b.key !in known) { refresh("remote") })
+            }.apply { dimmed = !on }
+        }
+        if (on) {
+            add(R.drawable.ic_add, "Add Another Button", "Press it on your remote when asked", SettingRow.Trail.NONE) {
+                act.toast("Press the remote button you want to add")
+                val ask = Runnable { Remap.learning = null }
+                Remap.learning = { key ->
+                    act.runOnUiThread {
+                        removeCallbacks(ask)
+                        Remap.addLearned(act, key)
+                        act.toast("Added ${Remap.keyName(key)}")
+                        refresh("remote")
+                    }
+                }
+                // Stop listening if no button is pressed.
+                postDelayed(ask, 10_000L)
+            }
+        }
+    }
+
+    private fun homeRowSummary(): String = when {
+        act.cfg.showPinned && act.cfg.showRecent -> "Pinned and recent"
+        act.cfg.showPinned -> "Pinned apps"
+        act.cfg.showRecent -> "Recent apps"
+        else -> "None"
     }
 
     private fun paneSounds() {
@@ -1097,19 +1174,22 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private fun paneHomeRow() {
         paneHeader("Home Row")
         val add = optionColumn(top0, "homerow")
-        val names = arrayOf("Pinned Apps", "Recent Apps", "None")
-        val icons = intArrayOf(R.drawable.ic_push_pin, R.drawable.ic_history, R.drawable.ic_visibility_off)
-        for (i in names.indices) {
-            val on = act.cfg.homeRow == i
-            choice(add, icons[i], names[i], on) {
-                act.setHomeRow(i)
-                refresh("homerow")
+        val cfg = act.cfg
+        add(R.drawable.ic_push_pin, "Pinned Apps", "", SettingRow.Trail.SWITCH) {
+            act.setHomeRows(!cfg.showPinned, cfg.showRecent); refresh("homerow")
+        }.apply { checked = cfg.showPinned }
+        add(R.drawable.ic_history, "Recent Apps", "", SettingRow.Trail.SWITCH) {
+            act.setHomeRows(cfg.showPinned, !cfg.showRecent); refresh("homerow")
+        }.apply { checked = cfg.showRecent }
+        if (cfg.showRecent && !Apps.hasUsageAccess(act)) {
+            add(R.drawable.ic_shield, "Include Apps Opened Elsewhere", "Needs usage access for Scene", SettingRow.Trail.OPEN) {
+                act.openUsageAccess()
             }
         }
-        if (act.cfg.homeRow == 1) {
-            val empty = act.cfg.recents.isEmpty()
+        if (cfg.showRecent) {
+            val empty = act.recentApps().isEmpty()
             add(R.drawable.ic_delete, "Clear Recents", "", SettingRow.Trail.NONE) {
-                if (act.cfg.recents.isEmpty()) return@add
+                if (act.recentApps().isEmpty()) return@add
                 confirm("Clear recent apps?", "The row empties until you open apps again", "Clear", R.drawable.ic_delete, "Pinned apps are kept") {
                     act.clearRecents(); act.toast("Recents cleared"); refresh("homerow")
                 }
@@ -1194,13 +1274,15 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private fun paneBackup(export: Boolean) {
         paneHeader(if (export) "Export Settings" else "Restore Settings")
         val y = infoCard(listOf("Profile" to Profiles.current.name, "File" to Store.BACKUP, "Folder" to "Android/data/…/files"), top0)
-        if (backupStatus.isNotEmpty()) pane.place(act.label(backupStatus, 25f, Theme.accent, Theme.MEDIUM, 2), 56f, y + 28f, PANE_W - 112f, 70f)
+        pane.place(BackupArt(act, export), 48f, y + 40f, PANE_W - 96f, 330f)
+        if (backupStatus.isNotEmpty()) pane.place(act.label(backupStatus, 25f, Theme.accent, Theme.MEDIUM, 2), 56f, y + 390f, PANE_W - 112f, 70f)
 
     }
 
     private fun paneSetup() {
-        paneHeader("Run Setup Again")
-        emptyState(R.drawable.ic_rocket_launch, "Each step can be skipped", top0 + 60f)
+        paneHeader("Run Setup Again", "Walks through each choice again. Your apps and profiles stay.")
+        pane.place(SetupArt(act), 24f, top1 + 40f, PANE_W - 48f, 440f)
+        pane.place(centredText("Each step can be skipped", 26f, Theme.TEXT_DIM), 48f, top1 + 500f, PANE_W - 96f, 36f)
     }
 
     private fun paneReset() {
@@ -1251,6 +1333,8 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     /** Shows the support link as a QR code. */
     private fun paneKofi() {
         paneHeader("Support Scene")
+        // Hearts sit behind the card, centred on it.
+        pane.place(HeartHalo(act).apply { card = Theme.px(360f) }, 0f, top1 + 24f + 180f - 300f, PANE_W, 600f)
         val card = Panel(act, 32f, { android.graphics.Color.WHITE })
         pane.place(card, (PANE_W - 360f) / 2, top1 + 24f, 360f, 360f)
         card.place(ImageView(act).apply { setImageResource(R.drawable.qr_kofi) }, 20f, 20f, 320f, 320f)
@@ -1264,11 +1348,26 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val am = act.getSystemService(ActivityManager::class.java)
         val mi = ActivityManager.MemoryInfo().also { am?.getMemoryInfo(it) }
         val own = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
-        var y = infoCard(listOf(
-            "Version" to versionName(),
-            "Device" to if (Build.MODEL.startsWith(Build.MANUFACTURER, ignoreCase = true)) Build.MODEL else "${Build.MANUFACTURER} ${Build.MODEL}",
-            "Android" to "${Build.VERSION.RELEASE}  ·  ${Build.VERSION.SECURITY_PATCH}",
-        ), top0) + 36f
+        // Device card: the device on the left, its name and versions on the right.
+        val device = DeviceCatalog.current()
+        val card = Panel(act, 36f, { Theme.surface })
+        pane.place(card, 48f, top0, PANE_W - 96f, 300f)
+        // Text starts at the left edge when there is no photo for this device.
+        val tx = if (device.photo != 0) 322f else 40f
+        if (device.photo != 0) card.place(DeviceArt(act, device.photo), 16f, 16f, 290f, 268f)
+        card.place(act.label(device.name, 34f, Theme.accent, Theme.BOLD), tx, 44f, PANE_W - 96f - tx - 28f, 46f)
+        val facts = listOf(
+            "Brand" to Build.BRAND.replaceFirstChar { it.uppercase() },
+            "Android" to Build.VERSION.RELEASE,
+            "Security patch" to Build.VERSION.SECURITY_PATCH,
+            "Scene" to versionName(),
+        )
+        for ((i, kv) in facts.withIndex()) {
+            val fy = 108f + i * 40f
+            card.place(act.label(kv.first, 24f, Theme.TEXT_DIM, Theme.MEDIUM), tx, fy, 190f, 34f)
+            card.place(act.label(kv.second, 24f, Theme.TEXT, Theme.MEDIUM), tx + 190f, fy, PANE_W - 96f - tx - 218f, 34f)
+        }
+        var y = top0 + 340f
 
         // Memory: this launcher, everything else, free.
         val mb = 1024L * 1024

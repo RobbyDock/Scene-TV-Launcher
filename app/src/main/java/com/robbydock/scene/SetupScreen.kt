@@ -30,7 +30,17 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
     private val dots = Dots(act)
 
     init {
-        show(Step.WELCOME)
+        show(resumeStep())
+    }
+
+    /** The step saved before a restart, moved past any step that is already done. */
+    private fun resumeStep(): Step {
+        var s = Step.values().getOrElse(act.statePrefs().getInt("setupStep", 0)) { Step.WELCOME }
+        if (s == Step.PROFILE && !Profiles.needsFirstProfile) s = afterProfile()
+        if (s == Step.HOME && isDefaultHome()) s = Step.WEATHER
+        if (s == Step.VOICE && micGranted()) s = Step.SCREENSAVER
+        if (s == Step.STREMIO && Stremio.signedIn(act)) s = Step.DONE
+        return s
     }
 
     override fun onBack(): Boolean {
@@ -83,6 +93,7 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
 
     private fun show(s: Step) {
         step = s
+        act.statePrefs().edit().putInt("setupStep", s.ordinal).apply()
         removeAllViews()
         dots.index = s.ordinal
         place(dots, 0f, 980f, 1920f, 24f)
@@ -178,14 +189,9 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
             )
             Step.DONE -> page(
                 R.drawable.ic_check, "You're all set",
-                if (ClockDream.isOn(act)) "To use Scene's screensaver, pick Scene in the TV's screensaver settings. You can change anything later in Settings."
+                if (ClockDream.isOn(act) && !ClockDream.isSelected(act)) "Scene's screensaver needs a one-time permission. Settings, Screensaver shows how. You can change anything later in Settings."
                 else "You can change any of this later in Settings.",
-                listOfNotNull(
-                    Choice("Go to Home", R.drawable.ic_home, true) { finish() },
-                    if (ClockDream.isOn(act)) Choice("Screensaver settings", R.drawable.ic_open_in_new) {
-                        act.openSystemSettings(android.provider.Settings.ACTION_DREAM_SETTINGS)
-                    } else null,
-                ),
+                listOf(Choice("Go to Home", R.drawable.ic_home, true) { finish() }),
             )
         }
     }

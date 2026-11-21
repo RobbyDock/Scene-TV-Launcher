@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -14,6 +15,12 @@
     <uses-feature android:name="android.hardware.location.network" android:required="false" />
     <!-- Lets the app menu start Android's uninstall confirmation. -->
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Recent apps opened outside Scene. The user allows it in Usage access. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- Lets Scene select its screensaver. Only granted through adb. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <queries>
@@ -101,6 +108,19 @@
                 <action android:name="android.service.dreams.DreamService" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+        </service>
+        <!-- Remote buttons: maps app buttons on the remote to apps the user picks. -->
+        <service
+            android:name=".RemapService"
+            android:exported="false"
+            android:label="@string/remap_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/remap_service" />
         </service>
     </application>
 </manifest>
