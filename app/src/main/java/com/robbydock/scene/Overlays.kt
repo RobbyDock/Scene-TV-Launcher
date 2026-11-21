@@ -169,6 +169,8 @@ class Sheet(
     footer: View? = null, footerH: Float = 0f,
     /** Shows this profile's picture beside the title. */
     headerProfile: Profile? = null,
+    /** Title sheets lead with the title's poster. An empty string shows a film icon until art arrives. */
+    posterUrl: String? = null,
 ) : OverlayBase(act, 0.5f, haze = true) {
     /** [profile] shows that profile's picture in place of [icon]. */
     class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val run: () -> Unit)
@@ -194,6 +196,11 @@ class Sheet(
             }
             panel.place(av, 48f, 52f, 112f, 112f)
             tx = 188f
+        } else if (posterUrl != null) {
+            val ph = SheetPoster(act)
+            panel.place(ph, 48f, 52f, 76f, 112f)
+            if (posterUrl.isNotEmpty()) Images.load(posterUrl, Theme.ipx(152f)) { b -> ph.art = b }
+            tx = 152f
         }
         panel.place(act.label(title, 40f, Theme.TEXT, Theme.SEMIBOLD), tx, if (subtitle.isEmpty()) 88f else 66f, w - tx - 48f, 54f)
         if (subtitle.isNotEmpty()) panel.place(act.label(subtitle, 24f, Theme.TEXT_DIM), tx, 128f, w - tx - 48f, 34f)
@@ -495,4 +502,45 @@ class SignInScreen(act: HomeActivity, expired: Boolean = false) : OverlayBase(ac
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean = super.dispatchKeyEvent(event)
+}
+
+/** Small poster at the head of a title sheet, with a film icon while there is no art. */
+class SheetPoster(ctx: android.content.Context) : View(ctx) {
+    var art: Bitmap? = null
+        set(v) { field = v; invalidate() }
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val clip = android.graphics.Path()
+    private val film = ctx.icon(R.drawable.ic_movie, Theme.TEXT_DIM)
+
+    init {
+        // Shadow and a faint edge, as on the cards.
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, Theme.px(16f))
+        }
+        clipToOutline = true
+        elevation = Theme.px(12f)
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat(); val r = Theme.px(16f)
+        val b = art
+        if (b == null) {
+            p.color = Theme.elev
+            c.drawRect(0f, 0f, w, h, p)
+            val s = Theme.px(40f)
+            film.setBounds(((w - s) / 2).toInt(), ((h - s) / 2).toInt(), ((w + s) / 2).toInt(), ((h + s) / 2).toInt())
+            film.draw(c)
+        } else {
+            // Cover crop, drawn at full strength.
+            p.color = android.graphics.Color.WHITE
+            val k = maxOf(w / b.width, h / b.height)
+            val dw = b.width * k; val dh = b.height * k
+            c.drawBitmap(b, null, android.graphics.RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), p)
+        }
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = Theme.px(2f)
+        p.color = 0x14FFFFFF
+        c.drawRoundRect(Theme.px(1f), Theme.px(1f), w - Theme.px(1f), h - Theme.px(1f), r, r, p)
+        p.style = Paint.Style.FILL
+    }
 }

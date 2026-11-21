@@ -50,6 +50,26 @@ fun Context.label(text: String, size: Float, color: Int, face: android.graphics.
         setLineSpacing(Theme.px(size * 0.35f), 1f)
     }
 
+/** Raised surface card: soft shadow, a faint lift at the top and a light top edge. */
+fun drawCard(c: android.graphics.Canvas, p: android.graphics.Paint, w: Int, h: Int, base: Int) {
+    val r = Theme.px(Theme.R_CARD)
+    p.shader = android.graphics.LinearGradient(0f, 0f, 0f, h.toFloat(), intArrayOf(Theme.mix(base, android.graphics.Color.WHITE, 0.03f), base, base),
+        floatArrayOf(0f, 0.46f, 1f), android.graphics.Shader.TileMode.CLAMP)
+    p.setShadowLayer(Theme.px(28f), 0f, Theme.px(12f), 0x38000000)
+    c.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), r, r, p)
+    p.clearShadowLayer()
+    p.shader = null
+    // Faint light along the top edge.
+    c.save()
+    c.clipRect(0f, 0f, w.toFloat(), r)
+    p.style = android.graphics.Paint.Style.STROKE
+    p.strokeWidth = Theme.px(1.5f)
+    p.color = 0x0DFFFFFF
+    c.drawRoundRect(0f, Theme.px(0.75f), w.toFloat(), h.toFloat(), r, r, p)
+    p.style = android.graphics.Paint.Style.FILL
+    c.restore()
+}
+
 fun Context.icon(res: Int, color: Int): Drawable = getDrawable(res)!!.mutate().apply { setTint(color) }
 
 /** Page and dialog badge: an accent glyph in a tonal circle. Pops in when attached. */
@@ -132,8 +152,14 @@ class Marquee(private val speedDp: Float = 64f, private val rest: Long = 1400L, 
 class ScrollTitle(ctx: Context) : View(ctx) {
     var text: String = ""
         set(v) { if (v != field) { field = v; marquee.restart(); fitSize(); invalidate() } }
-    private val tp = textPaint(88f, Theme.TEXT, Theme.BOLD)
+    private val tp = textPaint(88f, Theme.TEXT, Theme.BOLD).apply { if (Theme.CINEMA) letterSpacing = -0.01f }
     private val marquee = Marquee(speedDp = 26f, rest = 2600L, gapDp = 120f)
+    // Cinema sets a larger title.
+    private val maxSize = if (Theme.CINEMA) 104f else 88f
+    private val minSize = if (Theme.CINEMA) 76f else 68f
+
+    /** Height of the line the text centres in, in pixels. The rest below leaves room for descenders. Zero uses the full height. */
+    var lineBox = 0f
     private val fadeL = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
     private val fadeR = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
 
@@ -147,8 +173,8 @@ class ScrollTitle(ctx: Context) : View(ctx) {
     private fun fitSize() {
         if (width <= 0) return
         val room = width - bleed
-        var size = 88f
-        while (size > 68f) {
+        var size = maxSize
+        while (size > minSize) {
             tp.textSize = Theme.px(size)
             if (tp.measureText(text) <= room) break
             size -= 4f
@@ -168,7 +194,7 @@ class ScrollTitle(ctx: Context) : View(ctx) {
         tp.color = Theme.TEXT
         val w = width.toFloat()
         val h = height.toFloat()
-        val baseline = h / 2f - (tp.descent() + tp.ascent()) / 2f
+        val baseline = (if (lineBox > 0f) lineBox else h) / 2f - (tp.descent() + tp.ascent()) / 2f
         val scrolls = tp.measureText(text) > w - bleed
         if (!scrolls) {
             c.drawText(text, bleed, baseline, tp)
@@ -304,7 +330,8 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
     init {
         isFocusable = focusable
         isClickable = focusable
-        isFocusableInTouchMode = false
+        // Lets taps and code move focus while a mouse or touch screen is in use.
+        isFocusableInTouchMode = focusable
         // Turns off the system focus highlight.
         defaultFocusHighlightEnabled = false
         outlineProvider = object : android.view.ViewOutlineProvider() {
@@ -345,12 +372,11 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
         val s = if (h) focusScale else 1f
         val z = if (h) Theme.px(hotZ - restZ).coerceAtLeast(0f) else 0f
         if (Theme.FOCUS_MS == 0L || quiet) {
-            scaleX = s; scaleY = s; translationZ = z
+            focusS = s; applyScale(); translationZ = z
         } else {
             focusAnim = android.animation.ObjectAnimator.ofPropertyValuesHolder(
                 this,
-                android.animation.PropertyValuesHolder.ofFloat(View.SCALE_X, s),
-                android.animation.PropertyValuesHolder.ofFloat(View.SCALE_Y, s),
+                android.animation.PropertyValuesHolder.ofFloat(FOCUS_S, s),
                 android.animation.PropertyValuesHolder.ofFloat(View.TRANSLATION_Z, z),
             ).apply {
                 // Focus lands with a light spring at full motion; leaving is a plain ease.
@@ -365,7 +391,66 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (!gainFocus) press(false)
         sync()
+    }
+
+    // Scale is the focus scale times the press scale, so a press works on a focused view.
+    private var focusS = 1f
+    private var pressS = 1f
+    private var pressAnim: android.animation.Animator? = null
+    private fun applyScale() { scaleX = focusS * pressS; scaleY = focusS * pressS }
+
+    /**
+     * Press feedback: the view sinks when OK goes down, sinks further while held, and springs
+     * back on release or when the long press fires.
+     */
+    fun press(down: Boolean) {
+        if (Theme.motion == 2 || (down && !isClickable)) return
+        if (!down && pressAnim == null && pressS == 1f) return
+        pressAnim?.cancel()
+        val a = if (down) {
+            val k = if (Theme.moves) 0.96f else 0.985f
+            android.animation.ValueAnimator.ofPropertyValuesHolder(android.animation.PropertyValuesHolder.ofKeyframe("p",
+                android.animation.Keyframe.ofFloat(0f, 1f), android.animation.Keyframe.ofFloat(0.2f, k), android.animation.Keyframe.ofFloat(1f, k - 0.05f),
+            )).apply { duration = 500; interpolator = Theme.EASE }
+        } else {
+            android.animation.ValueAnimator.ofFloat(pressS, 1f).apply {
+                if (Theme.moves) { duration = 460; interpolator = Motion.SPRING } else { duration = 140; interpolator = Theme.EASE }
+            }
+        }
+        a.addUpdateListener { pressS = (it.getAnimatedValue("p") ?: it.animatedValue) as Float; applyScale() }
+        a.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) { if (pressAnim === animation) pressAnim = null }
+        })
+        pressAnim = a; a.start()
+    }
+
+    override fun performLongClick(): Boolean { press(false); return super.performLongClick() }
+
+    private var heldByTouch = false
+    private val touchHold = Runnable { heldByTouch = true; performLongClick() }
+
+    /** A tap or mouse click focuses the view, then acts as OK. Holding acts as a long press. */
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        if (!isFocusable || !isEnabled) return super.onTouchEvent(e)
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                heldByTouch = false
+                press(true)
+                postDelayed(touchHold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                removeCallbacks(touchHold)
+                press(false)
+                // The first tap focuses, a tap on the focused view acts as OK.
+                if (!heldByTouch) {
+                    if (!isFocused) requestFocus() else performClick()
+                }
+            }
+            android.view.MotionEvent.ACTION_CANCEL -> { removeCallbacks(touchHold); press(false) }
+        }
+        return true
     }
 
     override fun setSelected(selected: Boolean) {
@@ -374,6 +459,12 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
     }
 
     companion object {
+        /** Animates the focus part of the scale. */
+        private val FOCUS_S = object : android.util.Property<FocusView, Float>(Float::class.java, "focusS") {
+            override fun get(v: FocusView) = v.focusS
+            override fun set(v: FocusView, value: Float) { v.focusS = value; v.applyScale() }
+        }
+
         /** True while focus is restored by code, so it lands without the focus animation. */
         var quiet = false
 
@@ -385,8 +476,11 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
         }
     }
 
+    /** Shows focus without the ring, as on the Cinema Home. */
+    var ringless = false
+
     protected fun drawRing(c: Canvas, radius: Float, rect: RectF? = null) {
-        if (!hot()) return
+        if (!hot() || ringless) return
         val sw = Theme.px(6f)
         ring.color = Theme.TEXT
         ring.strokeWidth = sw
@@ -397,27 +491,65 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
     }
 }
 
+/** Small rounded "IMDb" tag set inline before a rating, in the dim text colour. */
+class ImdbSpan : android.text.style.ReplacementSpan() {
+    private val tp = textPaint(19f, Theme.BRAND_BG, Theme.BOLD)
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Theme.TEXT_DIM }
+    private val padX = Theme.px(7f)
+    private val gap = Theme.px(10f)
+
+    override fun getSize(p: Paint, text: CharSequence, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int =
+        (tp.measureText("IMDb") + padX * 2 + gap).toInt()
+
+    override fun draw(c: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, p: Paint) {
+        val w = tp.measureText("IMDb") + padX * 2
+        val h = Theme.px(26f)
+        // Centred on the line's x-height, like the dots between parts.
+        val cy = y + (p.ascent() + p.descent()) / 2
+        c.drawRoundRect(x, cy - h / 2, x + w, cy + h / 2, Theme.px(5f), Theme.px(5f), fill)
+        c.drawText("IMDb", x + padX, baseline(tp, cy), tp)
+    }
+}
+
 // ---------------------------------------------------------------- top bar
 
 class SearchPill(ctx: Context) : FocusView(ctx) {
     private val ic = ctx.icon(R.drawable.ic_search, Theme.TEXT_DIM)
-    private val tp = textPaint(30f, Theme.TEXT_DIM)
+    private val tp = textPaint(if (Theme.CINEMA) 28f else 30f, Theme.TEXT_DIM)
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     override val focusScale = 1.03f
+    override val hotZ get() = if (Theme.CINEMA) 16f else 0f
+    override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this) }
+    /** Width that fits the icon and text, in design units. Cinema only. */
+    fun fitWidth() = 24f + 40f + 16f + 36f + tp.measureText(TEXT) / Theme.u
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!Theme.CINEMA) Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
-        Glass.draw(c, this, box, h / 2)
         val s = Theme.ipx(40f)
-        val x = Theme.ipx(32f)
+        val x: Int
+        if (Theme.CINEMA) {
+            // A light veil at rest that lifts to a solid pill on focus.
+            fill.color = if (hot()) Theme.float else Theme.withAlpha(Theme.TEXT, 0.08f)
+            c.drawRoundRect(box, h / 2, h / 2, fill)
+            x = Theme.ipx(24f)
+            val fg = if (hot()) Theme.TEXT else Theme.TEXT_DIM
+            ic.setTint(fg); tp.color = fg
+        } else {
+            Glass.draw(c, this, box, h / 2)
+            x = Theme.ipx(32f)
+        }
         ic.setBounds(x, ((h - s) / 2).toInt(), x + s, ((h + s) / 2).toInt())
         ic.draw(c)
-        c.drawText("Search films, shows and apps", x + s + Theme.px(20f), baseline(tp, h / 2), tp)
+        c.drawText(TEXT, x + s + Theme.px(if (Theme.CINEMA) 16f else 20f), baseline(tp, h / 2), tp)
         drawRing(c, h / 2)
     }
+
+    private companion object { const val TEXT = "Search shows, films, apps and more" }
 }
 
 /** Stacked usage bar with a legend underneath, for storage and memory. */
@@ -542,12 +674,14 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     var active = false
         set(v) { field = v; invalidate() }
+    /** No glass at rest; a solid circle only while focused. Set before the view is attached. */
+    var bare = false
     override val restZ get() = if (filled) 6f else 0f
-    override val hotZ get() = if (filled) 24f else 0f
+    override val hotZ get() = if (filled) 24f else if (bare) 16f else 0f
     override fun shadowTint() = if (filled) Theme.accent else 0
     override fun shadowShape(o: android.graphics.Outline) = o.setOval(0, 0, width, height)
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!filled) Glass.register(this) }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!filled && !bare) Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
     override fun onDraw(c: Canvas) {
@@ -558,6 +692,9 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
             c.drawOval(box, fill)
             fill.shader = null
             ic.setTint(Theme.onAccent)
+        } else if (bare) {
+            if (hot()) { fill.color = Theme.float; c.drawOval(box, fill) }
+            ic.setTint(Theme.TEXT)
         } else {
             Glass.draw(c, this, box, w / 2)
             ic.setTint(Theme.TEXT)
@@ -604,15 +741,22 @@ class InfoPill(ctx: Context) : View(ctx) {
         }
     }
 
-    private val big = textPaint(34f, Theme.TEXT, Theme.SEMIBOLD)
+    private val cinema = Theme.CINEMA
+    private val big = if (cinema) textPaint(28f, Theme.TEXT_DIM, Theme.MEDIUM) else textPaint(34f, Theme.TEXT, Theme.SEMIBOLD)
     private val small = textPaint(24f, Theme.TEXT_DIM)
-    private val time = textPaint(38f, Theme.TEXT, Theme.BOLD).apply { fontFeatureSettings = "tnum" }
-    private val date = textPaint(21f, Theme.TEXT_DIM).apply { letterSpacing = 0.02f }
+    private val time = (if (cinema) textPaint(44f, Theme.TEXT, Theme.LIGHT).apply { letterSpacing = 0.01f } else textPaint(38f, Theme.TEXT, Theme.BOLD)).apply { fontFeatureSettings = "tnum" }
+    private val date = if (cinema) textPaint(16f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply { letterSpacing = 0.14f } else textPaint(21f, Theme.TEXT_DIM).apply { letterSpacing = 0.02f }
     private val div = Paint(Paint.ANTI_ALIAS_FLAG)
     private val box = RectF()
     private val tick = Runnable { invalidate(); schedule() }
+    /** Soft dark halo behind the bare Cinema text, so it reads on bright art. */
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this) }
+    init {
+        if (cinema) for (p in listOf(big, small, time, date)) p.setShadowLayer(Theme.px(6f), 0f, Theme.px(1f), Theme.withAlpha(Color.BLACK, 0.4f))
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!cinema) Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
     private fun schedule() {
@@ -638,25 +782,34 @@ class InfoPill(ctx: Context) : View(ctx) {
         return t to d
     }
 
+    private fun dateText(d: String) = if (cinema) d.uppercase(java.util.Locale.getDefault()) else d
+
+    // Cinema shows the temperature without the condition line.
+    private fun lineFor(w: WeatherNow) = if (cinema) "" else detailLine(w)
+    private val iconSize get() = if (cinema) 34f else 40f
+    private val iconGap get() = if (cinema) 10f else 14f
+    private val divGap get() = if (cinema) 26f else 28f
+
     private fun weatherWidth(): Float {
         val w = weather ?: return small.measureText(placeholder)
-        val line = detailLine(w)
-        return Theme.px(40f + 14f) + big.measureText(Weather.format(w.temp, fahrenheit)) +
+        val line = lineFor(w)
+        return Theme.px(iconSize + iconGap) + big.measureText(Weather.format(w.temp, fahrenheit)) +
             (if (line.isEmpty()) 0f else Theme.px(14f) + small.measureText(line))
     }
 
     private fun clockWidth(): Float {
         val (t, d) = timeText()
         val tw = time.measureText(if (t.length < 5) "00:00" else t)
-        return if (showDate) maxOf(tw, date.measureText(d)) else tw
+        return if (showDate) maxOf(tw, date.measureText(dateText(d))) else tw
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val pad = Theme.px(32f)
-        // Extra room after the clock.
-        var total = pad * 2 + if (showClock) Theme.px(8f) else 0f
+        // Cinema has no pill, so the text runs to the edges.
+        val padL = Theme.px(if (cinema) 0f else 32f)
+        val padR = Theme.px(if (cinema) 8f else 32f)
+        var total = padL + padR + if (showClock && !cinema) Theme.px(8f) else 0f
         if (showWeather) total += weatherWidth()
-        if (showWeather && showClock) total += Theme.px(56f)
+        if (showWeather && showClock) total += Theme.px(divGap * 2)
         if (showClock) total += clockWidth()
         setMeasuredDimension(total.toInt(), MeasureSpec.getSize(heightMeasureSpec))
     }
@@ -664,21 +817,26 @@ class InfoPill(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
-        Glass.draw(c, this, box, h / 2)
-        var x = Theme.px(32f)
+        if (cinema) {
+            // Drawn past the view's edges; the parent does not clip.
+            val cx = width / 2f; val rx = width / 2f + Theme.px(80f); val ry = h / 2 + Theme.px(52f)
+            halo.shader = RadialGradient(0f, 0f, 1f, intArrayOf(0x4D0A060C, 0x240A060C, 0), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+            c.save(); c.translate(cx, h / 2); c.scale(rx, ry); c.drawCircle(0f, 0f, 1f, halo); c.restore()
+        } else Glass.draw(c, this, box, h / 2)
+        var x = Theme.px(if (cinema) 0f else 32f)
         val w = weather
         if (showWeather) {
             if (w != null) {
                 val (_, res) = Weather.describe(w.code, w.day)
-                val s = Theme.ipx(40f)
+                val s = Theme.ipx(iconSize)
                 val ic = context.icon(res, Theme.STAR)
                 ic.setBounds(x.toInt(), ((h - s) / 2).toInt(), x.toInt() + s, ((h + s) / 2).toInt())
                 ic.draw(c)
-                x += s + Theme.px(14f)
+                x += s + Theme.px(iconGap)
                 val temp = Weather.format(w.temp, fahrenheit)
                 c.drawText(temp, x, baseline(big, h / 2), big)
                 x += big.measureText(temp)
-                val line = detailLine(w)
+                val line = lineFor(w)
                 if (line.isNotEmpty()) {
                     x += Theme.px(14f)
                     c.drawText(line, x, baseline(small, h / 2), small)
@@ -690,12 +848,22 @@ class InfoPill(ctx: Context) : View(ctx) {
             }
         }
         if (showWeather && showClock) {
-            x += Theme.px(28f)
-            div.color = Theme.withAlpha(Theme.TEXT, 0.16f)
-            c.drawRect(x, h * 0.25f, x + Theme.px(2f), h * 0.75f, div)
-            x += Theme.px(28f)
+            x += Theme.px(divGap)
+            div.color = Theme.withAlpha(Theme.TEXT, if (cinema) 0.14f else 0.16f)
+            if (cinema) c.drawRect(x, h / 2 - Theme.px(20f), x + Theme.px(1.5f), h / 2 + Theme.px(20f), div)
+            else c.drawRect(x, h * 0.25f, x + Theme.px(2f), h * 0.75f, div)
+            x += Theme.px(divGap)
         }
-        if (showClock) {
+        if (showClock && cinema) {
+            // Time and date share a right edge.
+            val (t, d) = timeText()
+            val right = width - Theme.px(8f)
+            if (showDate) {
+                val du = dateText(d)
+                c.drawText(t, right - time.measureText(t), h / 2 + Theme.px(4f), time)
+                c.drawText(du, right - date.measureText(du), h / 2 + Theme.px(28f), date)
+            } else c.drawText(t, right - time.measureText(t), baseline(time, h / 2), time)
+        } else if (showClock) {
             val (t, d) = timeText()
             if (showDate) {
                 c.drawText(t, x, h / 2 + Theme.px(1f), time)
@@ -714,7 +882,9 @@ class PillButton(ctx: Context, var text: String, iconRes: Int, private val prima
     private val tp = textPaint(30f, Theme.TEXT, Theme.SEMIBOLD)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     override val focusScale = 1.04f
-    override val restZ get() = if (primary) 6f else 0.1f
+    /** Secondary buttons show no pill until focused. Set before the view is attached. */
+    var bare = false
+    override val restZ get() = if (primary) 6f else if (bare) 0f else 0.1f
     override val hotZ = 22f
     override fun shadowTint() = if (primary) Theme.accent else 0
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
@@ -736,7 +906,7 @@ class PillButton(ctx: Context, var text: String, iconRes: Int, private val prima
         box.set(0f, 0f, width.toFloat(), h)
         fill.color = Theme.float
         if (primary) Theme.accentFill(fill, 0f, 0f, box.right, h)
-        c.drawRoundRect(box, h / 2, h / 2, fill)
+        if (primary || !bare || hot()) c.drawRoundRect(box, h / 2, h / 2, fill)
         fill.shader = null
         val fg = if (primary) Theme.onAccent else Theme.TEXT
         var x = if (text.isEmpty()) (width - Theme.px(40f)) / 2 else Theme.px(44f)
@@ -782,8 +952,8 @@ class SmallPill(ctx: Context, var text: String, var iconRes: Int) : FocusView(ct
     }
 }
 
-class Chip(ctx: Context, private val text: String) : View(ctx) {
-    private val tp = textPaint(22f, Theme.TEXT_DIM, Theme.MEDIUM)
+class Chip(ctx: Context, private val text: String, private val tinted: Boolean = false) : View(ctx) {
+    private val tp = if (tinted) textPaint(22f, Theme.accent, Theme.SEMIBOLD) else textPaint(22f, Theme.TEXT_DIM, Theme.MEDIUM)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val box = RectF()
 
@@ -793,7 +963,7 @@ class Chip(ctx: Context, private val text: String) : View(ctx) {
 
     override fun onDraw(c: Canvas) {
         box.set(0f, 0f, width.toFloat(), height.toFloat())
-        fill.color = Theme.withAlpha(Theme.float, 0.75f)
+        fill.color = if (tinted) Theme.withAlpha(Theme.accent, 0.14f) else Theme.withAlpha(Theme.float, 0.75f)
         c.drawRoundRect(box, Theme.px(Theme.R_CHIP), Theme.px(Theme.R_CHIP), fill)
         c.drawText(text, Theme.px(20f), baseline(tp, height / 2f), tp)
     }
@@ -874,6 +1044,26 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
     private val src = Rect()
     override val restZ = 10f
     override val hotZ = 34f
+    private val radius get() = Theme.px(if (Theme.CINEMA) 22f else Theme.R_CARD)
+    // Cinema: focus lifts the card and draws a bar along its foot. Other cards dim and hide their labels.
+    override val focusScale get() = if (cinema) 1.04f else Theme.FOCUS_SCALE
+    override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, radius)
+
+    /** Home's Cinema focus: lift and a foot bar instead of a ring. Other screens keep the ring. */
+    var cinema = false
+        set(v) { field = v; ringless = v; alpha = if (v && !isFocused) DIM else 1f; invalidate() }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (!cinema) return
+        val a = if (gainFocus) 1f else DIM
+        val y = if (gainFocus && Theme.moves) -Theme.px(8f) else 0f
+        if (Theme.MEDIUM_MS == 0L || FocusView.quiet) { alpha = a; translationY = y }
+        else animate().alpha(a).translationY(y).setDuration(if (gainFocus) Theme.FOCUS_MS * 3 else Theme.FOCUS_MS)
+            .setInterpolator(if (gainFocus && Theme.moves) Motion.SPRING else Theme.EASE).start()
+    }
+
+    private companion object { const val DIM = 0.65f }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         scrim.shader = LinearGradient(
@@ -882,13 +1072,14 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
         )
         clip.reset()
-        clip.addRoundRect(0f, 0f, w.toFloat(), h.toFloat(), Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), Path.Direction.CW)
+        clip.addRoundRect(0f, 0f, w.toFloat(), h.toFloat(), radius, radius, Path.Direction.CW)
+        invalidateOutline()
     }
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        val r = Theme.px(Theme.R_CARD)
+        val r = radius
         box.set(0f, 0f, w, h)
         fill.color = Theme.elev
         c.drawRoundRect(box, r, r, fill)
@@ -920,8 +1111,11 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
         }
         c.drawRect(box, scrim)
         val pad = Theme.px(24f)
-        c.drawText(tTitle.fit(title, w - pad * 2), pad, h - Theme.px(if (subtitle.isEmpty()) 30f else 58f), tTitle)
-        if (subtitle.isNotEmpty()) c.drawText(tSub.fit(subtitle, w - pad * 2), pad, h - Theme.px(28f), tSub)
+        // Cinema names only the focused card, or a card with no art.
+        if (!cinema || hot() || a == null) {
+            c.drawText(tTitle.fit(title, w - pad * 2), pad, h - Theme.px(if (subtitle.isEmpty()) 30f else 58f), tTitle)
+            if (subtitle.isNotEmpty()) c.drawText(tSub.fit(subtitle, w - pad * 2), pad, h - Theme.px(28f), tSub)
+        }
         if (badge.isNotEmpty()) {
             val tb = tBadge
             val bw = tb.measureText(badge) + Theme.px(28f)
@@ -941,6 +1135,7 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             c.drawRect(0f, h - bh, w * progress, h, fill)
             fill.shader = null
         }
+        if (cinema && hot()) { fill.color = Theme.TEXT; c.drawRect(0f, h - Theme.px(6f), w, h, fill) }
         c.restore()
         drawRing(c, r)
     }
@@ -1031,13 +1226,19 @@ class AppTile(ctx: Context) : FocusView(ctx) {
     override val restZ get() = if (dashed) 0f else 10f
     override val hotZ get() = if (dashed) 0f else 30f
 
-    private fun radius() = width * 0.24f
+    /** Home's Cinema focus: a bar in the icon foot instead of a ring. Other screens keep the ring. */
+    var cinema = false
+        set(v) { field = v; ringless = v; invalidate() }
+
+    // Cinema rounds the icon a little less: 36 on a 168 tile.
+    private val roundness = if (Theme.CINEMA) 36f / 168f else 0.24f
+    private fun radius() = width * roundness
 
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, width, radius())
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         clip.reset()
-        clip.addRoundRect(0f, 0f, w.toFloat(), w.toFloat(), w * 0.24f, w * 0.24f, Path.Direction.CW)
+        clip.addRoundRect(0f, 0f, w.toFloat(), w.toFloat(), w * roundness, w * roundness, Path.Direction.CW)
         invalidateOutline()
     }
 
@@ -1078,7 +1279,13 @@ class AppTile(ctx: Context) : FocusView(ctx) {
         }
         val t = tp.fit(label, w + Theme.px(24f))
         c.drawText(t, (w - tp.measureText(t)) / 2, w + Theme.px(24f) - tp.ascent(), tp)
-        if (lifted) drawLifted(c, w, r) else drawRing(c, r, ib)
+        if (lifted) drawLifted(c, w, r)
+        else if (cinema && hot() && !dashed) {
+            // A short bar inside the foot of the icon marks focus.
+            fill.color = Theme.TEXT
+            val bh = Theme.px(5f)
+            c.drawRoundRect(w * 0.3f, w - Theme.px(10f) - bh, w * 0.7f, w - Theme.px(10f), bh / 2, bh / 2, fill)
+        } else drawRing(c, r, ib)
     }
 
     private fun drawLifted(c: Canvas, w: Float, r: Float) {
@@ -1185,7 +1392,15 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         c.restoreToCount(s)
     }
     var onStep: ((Int) -> Unit)? = null
-    override val focusScale = 1.0f
+    /** Marks the list row whose pane is open while focus is in the pane. */
+    var marked = false
+        set(v) { if (field != v) { field = v; invalidate() } }
+    /** Hides the divider when the row above is marked. */
+    var aboveSelected = false
+        set(v) { if (field != v) { field = v; invalidate() } }
+    /** Leans in slightly on focus. Only for rows with room around them, such as the Settings list. */
+    var lean = false
+    override val focusScale get() = if (lean) 1.015f else 1f
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private var glyph: Drawable? = null
@@ -1211,11 +1426,26 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         val w = width.toFloat()
         val h = height.toFloat()
         val r = Theme.px(Theme.R_CARD)
-        if (hot()) {
+        val hot = hot()
+        t1.typeface = if (hot) Theme.SEMIBOLD else Theme.MEDIUM
+        tv.color = if (hot) Theme.TEXT else Theme.TEXT_DIM
+        if (hot) {
+            // Accent light on the leading edge, fading into the raised fill.
             box.set(0f, 0f, w, h)
-            fill.color = Theme.float
+            fill.shader = LinearGradient(0f, 0f, w, 0f, intArrayOf(Theme.mix(Theme.float, Theme.accent, 0.18f), Theme.float, Theme.float),
+                floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
             c.drawRoundRect(box, r, r, fill)
-        } else if (divider) {
+            fill.shader = null
+        } else if (marked) {
+            box.set(0f, 0f, w, h)
+            fill.color = Theme.withAlpha(Theme.accent, 0.09f)
+            c.drawRoundRect(box, r, r, fill)
+            // Short bar at the left edge, outside the card.
+            val bx = -Theme.px(12f)
+            fill.shader = LinearGradient(0f, Theme.px(32f), 0f, h - Theme.px(32f), Theme.accent, Theme.duo(Theme.accent), Shader.TileMode.CLAMP)
+            c.drawRoundRect(bx, Theme.px(32f), bx + Theme.px(6f), h - Theme.px(32f), Theme.px(3f), Theme.px(3f), fill)
+            fill.shader = null
+        } else if (divider && !aboveSelected) {
             fill.color = Theme.withAlpha(Theme.outline, 0.6f)
             c.drawRect(Theme.px(32f), 0f, w - Theme.px(32f), Theme.px(1.5f), fill)
         }
@@ -1233,11 +1463,20 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             avatarText.textSize = cs * if (av.emoji.isEmpty()) 0.46f else 0.54f
             c.drawText(t, cx - avatarText.measureText(t) / 2, baseline(avatarText, h / 2), avatarText)
         } else {
-            fill.color = if (brandIcon) Theme.elev else Theme.withAlpha(Theme.accent, 0.16f)
+            // The icon lights up on focus and while its pane is open.
+            val lit = (hot || marked) && !brandIcon
+            if (lit) {
+                // The icon lights up like the Play button.
+                val top = h / 2 - cs / 2
+                fill.shader = LinearGradient(cx - cs / 2, top, cx + cs / 2, top + cs, Theme.accent, Theme.duo(Theme.accent), Shader.TileMode.CLAMP)
+                fill.setShadowLayer(Theme.px(15f), 0f, Theme.px(6f), Theme.withAlpha(Theme.accent, 0.4f))
+            } else fill.color = if (brandIcon) Theme.elev else Theme.withAlpha(Theme.accent, 0.16f)
             c.drawCircle(cx, h / 2, cs / 2, fill)
+            fill.shader = null
+            fill.clearShadowLayer()
             // Brand marks keep their own colours.
             val g = glyph ?: (if (brandIcon) context.getDrawable(iconRes)!! else context.icon(iconRes, Theme.accent)).also { glyph = it }
-            if (!brandIcon) g.setTint(Theme.accent)
+            if (!brandIcon) g.setTint(if (lit) Theme.onAccent else Theme.accent)
             val gs = Theme.px(if (brandIcon) 38f else 34f)
             g.setBounds((cx - gs / 2).toInt(), (h / 2 - gs / 2).toInt(), (cx + gs / 2).toInt(), (h / 2 + gs / 2).toInt())
             g.draw(c)
@@ -1249,9 +1488,13 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
                 val sw = Theme.px(96f)
                 val sh = Theme.px(56f)
                 box.set(right - sw, (h - sh) / 2, right, (h + sh) / 2)
-                fill.color = if (checked) Theme.accent else Theme.outline
-                if (checked) fill.setShadowLayer(Theme.px(20f), 0f, 0f, Theme.withAlpha(Theme.accent, 0.4f))
+                fill.color = Theme.outline
+                if (checked) {
+                    Theme.accentFill(fill, box.left, box.top, box.right, box.bottom)
+                    fill.setShadowLayer(Theme.px(17f), 0f, 0f, Theme.withAlpha(Theme.accent, 0.4f))
+                }
                 c.drawRoundRect(box, sh / 2, sh / 2, fill)
+                fill.shader = null
                 fill.clearShadowLayer()
                 val k = Theme.px(44f)
                 val kx = if (checked) box.right - Theme.px(6f) - k / 2 else box.left + Theme.px(6f) + k / 2

@@ -69,7 +69,7 @@ class ProfileWizard(
     }
 
     private fun stepName() {
-        title(if (first) "Create your profile" else "New profile", "Type a name, then press Done on the keyboard. Back cancels.")
+        title(if (first) "Create your profile" else "New profile", "Type a name, then press Done on the keyboard.")
         (field.parent as? android.view.ViewGroup)?.removeView(field)
         val pill = FieldPill(act, field)
         place(pill, (1920f - 1000f) / 2, 320f, 1000f, 104f)
