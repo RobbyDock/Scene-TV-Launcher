@@ -65,6 +65,8 @@ class Meta(
     val runtime: String, val genres: List<String>, val videos: List<Video>,
     /** Every video, specials included, in the order Stremio uses for its watched bitfield. */
     val all: List<Video> = videos,
+    /** YouTube id of the first trailer, when Cinemeta lists one. */
+    val trailer: String? = null,
 )
 
 class SearchHit(val id: String, val type: String, val name: String, val poster: String?, val year: String)
@@ -294,7 +296,7 @@ object Stremio {
             id, type, m.optString("name", id), m.optString("background").ifEmpty { null },
             m.optString("logo").ifEmpty { null }, m.optString("poster").ifEmpty { null },
             m.optString("description"), m.optString("releaseInfo", m.optString("year")).take(9),
-            m.optString("imdbRating"), m.optString("runtime"), genres, videos, all,
+            m.optString("imdbRating"), m.optString("runtime"), genres, videos, all, trailerId(m),
         )
         metaCache.put(id, meta)
         return meta
@@ -548,6 +550,29 @@ object Stremio {
     }
 
     // ------------------------------------------------------------ deep links
+
+    /** First trailer's YouTube id, from trailerStreams or the older trailers list. */
+    private fun trailerId(m: JSONObject): String? {
+        m.optJSONArray("trailerStreams")?.let { a ->
+            for (i in 0 until a.length()) a.optJSONObject(i)?.optString("ytId")?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        m.optJSONArray("trailers")?.let { a ->
+            for (i in 0 until a.length()) a.optJSONObject(i)?.optString("source")?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Plays a trailer in Stremio's own player. The route carries the stream as zlib-deflated JSON
+     * in base64, the same form Stremio's Trailer button uses.
+     */
+    fun trailerIntent(ytId: String, title: String): Intent {
+        val json = JSONObject().put("ytId", ytId).put("description", title).toString().toByteArray(Charsets.UTF_8)
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.DeflaterOutputStream(out).use { it.write(json) }
+        val b64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        return Intent(Intent.ACTION_VIEW, Uri.parse("stremio:///player/" + Uri.encode(b64)))
+    }
 
     fun detailIntent(type: String, id: String, videoId: String? = null): Intent {
         val path = StringBuilder("stremio:///detail/").append(enc(type)).append('/').append(enc(id))

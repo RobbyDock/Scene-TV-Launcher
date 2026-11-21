@@ -119,6 +119,7 @@ class HomeActivity : Activity() {
             clipChildren = false
         }
         setContentView(root)
+        hideSystemBars()
         Sounds.load(this)
         root.viewTreeObserver.addOnGlobalFocusChangeListener { old, new -> if (old != null && new != null) Sounds.move() }
         home = HomeScreen(this)
@@ -551,10 +552,36 @@ class HomeActivity : Activity() {
 
     private var lastLocate = 0L
 
+    /** Full screen, like a TV home screen. Devices that show bars, such as phones and tablets, can still swipe them in. */
+    @Suppress("DEPRECATION")
+    private fun hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let {
+                it.hide(android.view.WindowInsets.Type.systemBars())
+                it.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_UP && event.repeatCount == 0 &&
             (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == android.view.KeyEvent.KEYCODE_ENTER) &&
             currentFocus !is SoundPad) Sounds.ok(this)
+        // OK sinks the focused item while it is held.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == android.view.KeyEvent.KEYCODE_ENTER) {
+            val f = currentFocus as? FocusView
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) f?.press(true)
+            else if (event.action == android.view.KeyEvent.ACTION_UP) f?.press(false)
+        }
         // The Menu key on remotes that have one opens the same options as holding OK.
         if (event.keyCode == android.view.KeyEvent.KEYCODE_MENU) {
             val f = currentFocus
@@ -835,6 +862,12 @@ class HomeActivity : Activity() {
         if (start(Stremio.detailIntent(type, id, videoId), "Stremio is not installed")) noteRecent(Config.STREMIO)
     }
 
+    /** Plays the title's trailer in Stremio. */
+    fun openTrailer(ytId: String, title: String) {
+        if (!Apps.isInstalled(packageManager, Config.STREMIO)) { installStremio(); return }
+        if (start(Stremio.trailerIntent(ytId, title), "Stremio can't play the trailer")) noteRecent(Config.STREMIO)
+    }
+
     /** Opens Stremio's Play Store page so it can be installed. */
     fun installStremio() {
         toast("Stremio isn't installed. Opening the Play Store.")
@@ -1044,13 +1077,15 @@ class HomeActivity : Activity() {
         val a = ArrayList<Sheet.Action>()
         val where = if (item.season != null) "S${item.season} E${item.episode}" else "the film"
         val series = item.type == "series"
-        if (item.started) {
+        if (!Apps.isInstalled(packageManager, Config.STREMIO)) {
+            a.add(Sheet.Action("Get Stremio", R.drawable.ic_shop, "Install Stremio from the Play Store to watch") { installStremio() })
+        } else if (item.started) {
             a.add(Sheet.Action("Resume", R.drawable.ic_play_arrow, "Carry on with $where in Stremio") { openDetail(item.type, item.id, item.videoId) })
         } else {
             a.add(Sheet.Action(if (item.isNew) "Play new episode" else "Play", R.drawable.ic_play_arrow, "Start $where in Stremio") { openDetail(item.type, item.id, item.videoId) })
         }
         val next = meta?.let { Stremio.nextVideo(it, item) }
-        if (next != null && item.started) a.add(Sheet.Action("Next episode", R.drawable.ic_skip_next, "S${next.season} E${next.episode}" + (next.title.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")) { openDetail(item.type, item.id, next.id) })
+        if (next != null && item.started && Apps.isInstalled(packageManager, Config.STREMIO)) a.add(Sheet.Action("Next episode", R.drawable.ic_skip_next, "S${next.season} E${next.episode}" + (next.title.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")) { openDetail(item.type, item.id, next.id) })
         if (Stremio.signedIn(this)) {
             a.add(Sheet.Action(if (series) "Mark episode watched" else "Mark as watched", R.drawable.ic_check_circle,
                 if (series) "Ticks $where in Stremio and moves on to the next episode" else "Counts as watched in Stremio and leaves Continue watching") { markWatched(item) })
@@ -1059,9 +1094,15 @@ class HomeActivity : Activity() {
             } else {
                 a.add(Sheet.Action("Add to library", R.drawable.ic_bookmark_add, "Keeps it in your Stremio library" + if (series) " and tells you about new episodes" else "") { setInLibrary(item, true) })
             }
+            // The Cinema spotlight has no alerts button, so the choice lives here.
+            if (Theme.CINEMA && series && item.inLibrary) {
+                if (item.notify) a.add(Sheet.Action("Stop new episode alerts", R.drawable.ic_notifications_active, "No more alerts for new episodes") { setNotify(item, false) })
+                else a.add(Sheet.Action("Get new episode alerts", R.drawable.ic_notifications_off, "Tells you when a new episode is out") { setNotify(item, true) })
+            }
         }
         if (series) a.add(Sheet.Action("Episode list", R.drawable.ic_list, "All seasons and episodes in Stremio") { openDetail(item.type, item.id) })
         else a.add(Sheet.Action("Details", R.drawable.ic_info, "Cast, streams and more in Stremio") { openDetail(item.type, item.id) })
+        meta?.trailer?.let { yt -> a.add(Sheet.Action("Trailer", R.drawable.ic_movie, "Plays in Stremio") { openTrailer(yt, item.name) }) }
         a.add(Sheet.Action("Hide from Continue watching", R.drawable.ic_visibility_off, "Only on this TV, until you watch more of it") { hideContinue(item) })
         a.add(Sheet.Action("Refresh library", R.drawable.ic_sync, "Fetch the latest progress from Stremio") { refreshContinue(force = true); toast("Refreshing your library") })
         val sub = buildList {
@@ -1070,6 +1111,6 @@ class HomeActivity : Activity() {
             if (item.isNew) add(if (item.newCount == 1) "1 new episode" else "${item.newCount} new episodes")
             if (item.started) add("${Math.round(item.progress * 100)}% watched")
         }.joinToString("  ·  ")
-        push(Sheet(this, item.name, sub, null, a))
+        push(Sheet(this, item.name, sub, null, a, posterUrl = item.poster ?: ""))
     }
 }

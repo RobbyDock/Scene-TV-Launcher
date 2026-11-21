@@ -57,10 +57,17 @@ object Theme {
     val AMBIENT_MS get() = when (motion) { 0 -> 900L; 1 -> 600L; else -> 0L }
     val moves get() = motion == 0
     const val FOCUS_SCALE = 1.06f
+
+    /**
+     * Cinema look for Home: a bare top bar, a larger title, fewer spotlight buttons, and focus shown
+     * by lift and a short bar instead of a ring.
+     */
+    const val CINEMA = true
     val EASE = PathInterpolator(0.22f, 0.25f, 0f, 1f)
 
     // Outfit is bundled so text measures the same on every device; the system font is the fallback
     // until init runs, and for any character Outfit lacks.
+    var LIGHT: Typeface = Typeface.create("sans-serif-light", Typeface.NORMAL); private set
     var REGULAR: Typeface = Typeface.create("sans-serif", Typeface.NORMAL); private set
     var MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); private set
     var SEMIBOLD: Typeface = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.SANS_SERIF, 600, false) else MEDIUM; private set
@@ -76,6 +83,7 @@ object Theme {
 
     private fun loadFonts(ctx: Context) {
         if (fontsLoaded) return
+        outfit(ctx, 300)?.let { LIGHT = it }
         outfit(ctx, 400)?.let { REGULAR = it }
         outfit(ctx, 500)?.let { MEDIUM = it }
         outfit(ctx, 600)?.let { SEMIBOLD = it }

@@ -51,6 +51,34 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         isVerticalFadingEdgeEnabled = true
         setFadingEdgeLength(Theme.ipx(48f))
     }
+    /** Clips the list and, once scrolled, fades its top out under the small title. */
+    private val listBox = object : FrameLayout(act) {
+        var fade = 0f
+            set(v) { if (field != v) { field = v; invalidate() } }
+        private val mask = android.graphics.Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
+
+        init { addView(scroll, LayoutParams(-1, -1)) }
+
+        override fun dispatchDraw(c: android.graphics.Canvas) {
+            if (fade <= 0f) { super.dispatchDraw(c); return }
+            // Hidden under the small title, then a long eased fade back in.
+            val top = Theme.px(64f)
+            val h = Theme.px(220f)
+            val s = c.saveLayer(0f, 0f, width.toFloat(), h, null)
+            super.dispatchDraw(c)
+            val a = fade * 255
+            fun k(v: Float) = (a * v).toInt() shl 24
+            mask.shader = android.graphics.LinearGradient(0f, top, 0f, h,
+                intArrayOf(k(1f), k(0.82f), k(0.5f), k(0.18f), 0), floatArrayOf(0f, 0.2f, 0.45f, 0.72f, 1f),
+                android.graphics.Shader.TileMode.CLAMP)
+            c.drawRect(0f, 0f, width.toFloat(), h, mask)
+            c.restoreToCount(s)
+            c.save()
+            c.clipRect(0f, h, width.toFloat(), height.toFloat())
+            super.dispatchDraw(c)
+            c.restore()
+        }
+    }
     private val list = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
     private val pane = FrameLayout(act).apply { clipChildren = false }
     /** Small title that settles at the top once the large one has scrolled away. */
@@ -63,12 +91,12 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private var glassPreview: GlassPreview? = null
 
     init {
+        place(Backdrop(), 0f, 0f, 1920f, 1080f)
         // The large title is the list's first item and scrolls with it.
-        place(act.clipBox(scroll), 84f, 0f, 840f, 1080f)
+        place(listBox, 36f, 0f, 936f, 1080f)
         scroll.addView(list, LayoutParams(-1, -2))
-        list.setPadding(Theme.ipx(12f), Theme.ipx(TITLE_TOP), Theme.ipx(12f), Theme.ipx(120f))
-        val scrim = TopScrim(act).apply { alpha = 0f }
-        place(scrim, 0f, 0f, 940f, 130f)
+        // Side padding leaves room for the card shadows inside the clip.
+        list.setPadding(Theme.ipx(60f), Theme.ipx(TITLE_TOP), Theme.ipx(60f), Theme.ipx(120f))
         place(smallTitle, 96f, 30f, 600f, 40f)
         scroll.viewTreeObserver.addOnScrollChangedListener {
             val y = scroll.scrollY.toFloat()
@@ -82,19 +110,44 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 big.scaleY = big.scaleX
                 big.alpha = 1f - k
             }
-            // Then a small title settles at the top, and further down it leaves too.
+            // Then a small title settles at the top and stays.
             val inT = ((y - th * 0.6f) / (th * 0.5f)).coerceIn(0f, 1f)
-            // The bar slides up out of view as one piece.
-            val out = ((y - th * 3f) / (th * 0.6f)).coerceIn(0f, 1f)
-            val lift = -scrim.height * out
             smallTitle.alpha = inT
-            smallTitle.translationY = Theme.px(10f) * (1f - inT) + lift
-            scrim.alpha = (y / Theme.px(48f)).coerceIn(0f, 1f)
-            scrim.translationY = lift
+            smallTitle.translationY = Theme.px(10f) * (1f - inT)
+            listBox.fade = (y / Theme.px(48f)).coerceIn(0f, 1f)
         }
         place(pane, PANE_X, PANE_Y, PANE_W, PANE_H)
         build()
         post { (rows[initialFocus ?: "accent"] ?: rows.values.first()).requestFocus() }
+    }
+
+    /** Accent light behind the screen and a vignette toward the corners. */
+    private inner class Backdrop : View(act) {
+        private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+        private fun glow(c: android.graphics.Canvas, cx: Float, cy: Float, rx: Float, ry: Float, color: Int, a: Float) {
+            c.save()
+            c.translate(Theme.px(cx), Theme.px(cy))
+            c.scale(1f, ry / rx)
+            p.shader = android.graphics.RadialGradient(0f, 0f, Theme.px(rx), Theme.withAlpha(color, a), color and 0x00FFFFFF,
+                android.graphics.Shader.TileMode.CLAMP)
+            c.drawCircle(0f, 0f, Theme.px(rx), p)
+            c.restore()
+        }
+
+        override fun onDraw(c: android.graphics.Canvas) {
+            glow(c, 1498f, 194f, 770f, 532f, Theme.accent, 0.13f)
+            glow(c, 115f, 1037f, 630f, 490f, Theme.duo(Theme.accent), 0.09f)
+            // Vignette toward the corners.
+            c.save()
+            c.translate(width / 2f, height / 2f)
+            c.scale(1f, 900f / 1400f)
+            val vr = Theme.px(1400f)
+            p.shader = android.graphics.RadialGradient(0f, 0f, vr, intArrayOf(0, 0, 0x59000000), floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP)
+            c.drawRect(-vr * 2, -vr * 2, vr * 2, vr * 2, p)
+            c.restore()
+        }
     }
 
     override fun onBack(): Boolean {
@@ -184,7 +237,8 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         row("pins", R.drawable.ic_push_pin, "Pinned Apps", "${cfg.pinned.size} pinned") { panePinned() }.apply {
             setOnClickListener { act.push(AppPicker(act)) }
         }
-        row("hidden", R.drawable.ic_visibility_off, "Hidden Apps", if (cfg.hidden.isEmpty()) "None" else "${cfg.hidden.size} hidden") { paneHidden() }.apply {
+        val hiddenCount = hiddenInstalled().size
+        row("hidden", R.drawable.ic_visibility_off, "Hidden Apps", if (hiddenCount == 0) "None" else "$hiddenCount hidden") { paneHidden() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("hidden0")?.requestFocus() }
         }
         row("sort", R.drawable.ic_sort_by_alpha, "All Apps Order", arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { paneSort() }.apply {
@@ -304,20 +358,18 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private var first = true
 
     private fun group(title: String) {
-        list.addView(act.label(title, 24f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply {
+        list.addView(act.label(title.uppercase(), 19f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(Theme.ipx(8f), 0, 0, 0)
+            letterSpacing = 0.14f
+            setPadding(Theme.ipx(32f), 0, 0, 0)
         }, LinearLayout.LayoutParams(-2, Theme.ipx(GROUP_LABEL_H)).apply {
-            topMargin = if (first) 0 else Theme.ipx(28f)
+            topMargin = if (first) 0 else Theme.ipx(36f)
             bottomMargin = Theme.ipx(GROUP_GAP)
         })
         first = false
         val g = object : LinearLayout(act) {
             private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-            override fun onDraw(c: android.graphics.Canvas) {
-                p.color = Theme.surface
-                c.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), p)
-            }
+            override fun onDraw(c: android.graphics.Canvas) = drawCard(c, p, width, height, Theme.surface)
         }.apply {
             orientation = LinearLayout.VERTICAL
             setWillNotDraw(false)
@@ -329,18 +381,30 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     private fun endGroup() { groupView = null }
 
+    /** Card fill: a faint light along the top edge and a soft shadow below. */
     private fun row(key: String, icon: Int, title: String, sub: String, pane: () -> Unit): SettingRow {
         val g = groupView!!
         val r = SettingRow(act, icon, title).apply {
             subtitle = sub
             divider = g.childCount > 0
+            lean = true
             focusKey = key
-            onFocused = { current = key; pane() }
+            onFocused = { current = key; markSelected(); pane() }
         }
         g.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(112f)))
         rows[key] = r
         rowIcons[key] = icon
         return r
+    }
+
+    /** Marks the open row, and hides the divider under it. */
+    private fun markSelected() {
+        var prev = false
+        for ((k, r) in rows) {
+            r.marked = k == current
+            r.aboveSelected = prev
+            prev = r.marked
+        }
     }
 
     private fun systemRow(key: String, icon: Int, title: String, action: String, inside: List<String>) {
@@ -385,7 +449,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         pendingPreview?.let { removeCallbacks(it) }
         glassPreview = null
         pane.removeAllViews()
-        pane.place(act.label(title, 46f, Theme.TEXT, Theme.BOLD), 48f, 40f, PANE_W - 96f, 62f)
+        pane.place(act.label(title, 48f, Theme.TEXT, Theme.BOLD).apply { letterSpacing = -0.01f }, 48f, 40f, PANE_W - 96f, 62f)
         // Says whether a change stays with this profile or reaches every profile.
         val scope = when (title) {
             in PER_PROFILE -> "Per profile"
@@ -394,7 +458,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         if (scope != null) {
             val box = FrameLayout(act)
-            box.addView(Chip(act, scope).apply { contentDescription = scope }, FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END))
+            box.addView(Chip(act, scope, tinted = true).apply { contentDescription = scope }, FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END))
             pane.place(box, 48f, 50f, PANE_W - 96f, 44f)
         }
         if (body.isNotEmpty()) pane.place(act.label(body, 24f, Theme.TEXT_DIM, Theme.REGULAR, 2), 48f, 114f, PANE_W - 96f, 66f)
@@ -409,10 +473,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     /** A rounded card that holds a column of rows. */
     private fun cardColumn(): LinearLayout = object : LinearLayout(act) {
         private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-        override fun onDraw(c: android.graphics.Canvas) {
-            p.color = Theme.surface
-            c.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), p)
-        }
+        override fun onDraw(c: android.graphics.Canvas) = drawCard(c, p, width, height, Theme.elev)
     }.apply {
         orientation = LinearLayout.VERTICAL
         setWillNotDraw(false)
@@ -1214,16 +1275,19 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     }
 
     private fun paneHidden() {
-        val cfg = act.cfg
-        if (cfg.hidden.isEmpty()) {
+        val shown = hiddenInstalled()
+        if (shown.isEmpty()) {
             paneHeader("Hidden Apps")
             emptyState(R.drawable.ic_visibility_off, "No hidden apps")
             return
         }
         paneHeader("Hidden Apps")
-        tileGrid(cfg.hidden.toList(), true, onPick = { pkg -> act.unhide(pkg); refresh("hidden") }, top = top0)
+        tileGrid(shown, true, onPick = { pkg -> act.unhide(pkg); refresh("hidden") }, top = top0)
 
     }
+
+    /** Hidden apps that are still installed. Others, such as the Stremio boot stub on a TV without it, are left out. */
+    private fun hiddenInstalled(): List<String> = act.cfg.hidden.filter { act.app(it) != null }
 
     private fun paneCwHidden() {
         val n = act.hiddenContinueCount
@@ -1332,15 +1396,62 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     /** Shows the support link as a QR code. */
     private fun paneKofi() {
-        paneHeader("Support Scene")
-        // Hearts sit behind the card, centred on it.
-        pane.place(HeartHalo(act).apply { card = Theme.px(360f) }, 0f, top1 + 24f + 180f - 300f, PANE_W, 600f)
-        val card = Panel(act, 32f, { android.graphics.Color.WHITE })
-        pane.place(card, (PANE_W - 360f) / 2, top1 + 24f, 360f, 360f)
-        card.place(ImageView(act).apply { setImageResource(R.drawable.qr_kofi) }, 20f, 20f, 320f, 320f)
-        pane.place(centredText("Scan with your phone", 28f, Theme.TEXT, Theme.SEMIBOLD), 48f, top1 + 412f, PANE_W - 96f, 40f)
-        pane.place(centredText("ko-fi.com/robbydock", 24f, Theme.TEXT_DIM), 48f, top1 + 456f, PANE_W - 96f, 34f)
-        Motion.pop(card)
+        paneHeader("Support Scene", "Scene is free and has no ads. If it earns its spot on your TV, a coffee keeps it growing.")
+        pane.place(KofiCard(), 48f, 212f, PANE_W - 96f, 452f)
+        pane.place(centredText("Thank you for using Scene", 26f, Theme.TEXT_DIM), 48f, 692f, PANE_W - 96f, 36f)
+    }
+
+    /** Ko-fi card: the QR code on the left, and how to use it on the right. */
+    private inner class KofiCard : View(act) {
+        private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private val qr = act.getDrawable(R.drawable.qr_kofi)!!
+        private val heart = act.icon(R.drawable.ic_favorite, Theme.onAccent)
+        private val title = textPaint(34f, Theme.TEXT, Theme.BOLD)
+        private val link = textPaint(24f, Theme.accent, Theme.MEDIUM)
+        private val step = textPaint(22f, Theme.TEXT_DIM)
+        private val num = textPaint(18f, Theme.TEXT, Theme.SEMIBOLD)
+
+        override fun onDraw(c: android.graphics.Canvas) {
+            drawCard(c, p, width, height, Theme.elev)
+            fun x(v: Float) = Theme.px(v)
+            // White QR card with an accent ring.
+            val ql = x(60f); val qt = x(76f); val qs = x(300f); val qr0 = x(28f)
+            p.color = Theme.withAlpha(Theme.accent, 0.55f)
+            c.drawRoundRect(ql - x(6f), qt - x(6f), ql + qs + x(6f), qt + qs + x(6f), qr0 + x(6f), qr0 + x(6f), p)
+            p.color = android.graphics.Color.WHITE
+            p.setShadowLayer(x(51f), 0f, x(24f), 0x80000000.toInt())
+            c.drawRoundRect(ql, qt, ql + qs, qt + qs, qr0, qr0, p)
+            p.clearShadowLayer()
+            qr.setBounds((ql + x(18f)).toInt(), (qt + x(18f)).toInt(), (ql + qs - x(18f)).toInt(), (qt + qs - x(18f)).toInt())
+            qr.draw(c)
+            // Badge, title, link and three steps, centred on the card's height.
+            val sx = x(420f)
+            var y = (height - x(338f)) / 2
+            val br = x(36f)
+            Theme.accentFill(p, sx, y, sx + br * 2, y + br * 2)
+            p.setShadowLayer(x(22f), 0f, x(10f), Theme.withAlpha(Theme.accent, 0.4f))
+            c.drawCircle(sx + br, y + br, br, p)
+            p.clearShadowLayer()
+            p.shader = null
+            val hs = x(38f)
+            heart.setBounds((sx + br - hs / 2).toInt(), (y + br - hs / 2).toInt(), (sx + br + hs / 2).toInt(), (y + br + hs / 2).toInt())
+            heart.draw(c)
+            y += x(96f)
+            c.drawText("Buy me a coffee", sx, baseline(title, y + x(22f)), title)
+            y += x(48f)
+            c.drawText("ko-fi.com/robbydock", sx, baseline(link, y + x(16f)), link)
+            y += x(62f)
+            val lines = listOf("Open your phone camera", "Point it at the code", "Tip what feels right")
+            for ((i, s) in lines.withIndex()) {
+                val cy = y + x(17f)
+                p.color = Theme.float
+                c.drawCircle(sx + x(17f), cy, x(17f), p)
+                val n = "${i + 1}"
+                c.drawText(n, sx + x(17f) - num.measureText(n) / 2, baseline(num, cy), num)
+                c.drawText(s, sx + x(48f), baseline(step, cy), step)
+                y += x(50f)
+            }
+        }
     }
 
     private fun paneAbout() {
