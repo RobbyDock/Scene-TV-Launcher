@@ -73,8 +73,8 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
         val rows = listOf(
             listOf(netTile, btTile, volumeTile()),
             listOf(
-                tile(R.drawable.ic_display_settings, "Display", "", false) { act.openSystemSettings("android.settings.DISPLAY_SETTINGS") },
-                tile(R.drawable.ic_tv, "Screensaver", "", false) { act.openSystemSettings(Settings.ACTION_DREAM_SETTINGS) },
+                tile(R.drawable.ic_display_settings, "Display", "", false) { act.openDisplaySettings() },
+                tile(R.drawable.ic_tv, "Screensaver", "", false) { act.pop(); act.openSettings("dream") },
                 tile(R.drawable.ic_accessibility_new, "Accessibility", "", false) { act.openSystemSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) },
             ),
         )
@@ -150,7 +150,7 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
             t.level = if (tv) -1f else v.toFloat() / max
         }
         update()
-        t.setOnClickListener { act.openSystemSettings(Settings.ACTION_SOUND_SETTINGS) }
+        t.setOnClickListener { act.openSoundSettings() }
         tiles.add(t to update)
         return t
     }
@@ -192,8 +192,11 @@ class QuickTile(ctx: Context, iconRes: Int, private val title: String) : FocusVi
         val cs = Theme.px(72f)
         val cx = w / 2
         val cy = h * 0.4f
+        // The gradient takes the paint's alpha, so the active circle must start opaque.
         fill.color = if (active) Theme.accent else Theme.withAlpha(Theme.accent, 0.16f)
+        if (active) Theme.accentFill(fill, cx - cs / 2, cy - cs / 2, cx + cs / 2, cy + cs / 2)
         c.drawCircle(cx, cy, cs / 2, fill)
+        fill.shader = null
         if (level >= 0f) {
             val rr = cs / 2 + Theme.px(8f)
             arc.strokeWidth = Theme.px(5f)

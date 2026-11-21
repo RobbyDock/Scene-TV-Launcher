@@ -320,13 +320,18 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
         applyTint()
     }
 
-    private fun applyTint() {
+    /** Keeps the tinted shadow on while resting, not only when focused. */
+    open val glowAtRest = false
+
+    protected fun applyTint() {
         if (android.os.Build.VERSION.SDK_INT < 28) return
         // A tinted spot shadow lands below the view.
         // The glow uses only the ambient shadow, which spreads on all sides.
         val t = shadowTint()
-        outlineSpotShadowColor = if (t != 0 && hot()) Color.TRANSPARENT else Color.BLACK
-        outlineAmbientShadowColor = if (t != 0 && hot()) t else Color.BLACK
+        val lit = t != 0 && (hot() || glowAtRest)
+        // A resting glow also tints the spot shadow, which is much stronger than the ambient one.
+        outlineSpotShadowColor = if (lit) (if (glowAtRest) t else Color.TRANSPARENT) else Color.BLACK
+        outlineAmbientShadowColor = if (lit) t else Color.BLACK
     }
 
     protected fun hot() = isFocused || isSelected
@@ -464,7 +469,10 @@ class AvatarView(ctx: Context, private val addMode: Boolean = false) : FocusView
     var letter = ""
         set(v) { field = v; invalidate() }
     var colorIndex = 0
-        set(v) { field = v; invalidate() }
+        set(v) { field = v; applyTint(); invalidate() }
+    /** Large views: a glow in the second colour around the picture. */
+    var glow = false
+        set(v) { field = v; applyTint() }
     /** Emoji picture; replaces the letter when set. */
     var emoji = ""
         set(v) { field = v; invalidate() }
@@ -476,9 +484,13 @@ class AvatarView(ctx: Context, private val addMode: Boolean = false) : FocusView
     private val lock = ctx.icon(R.drawable.ic_lock, Theme.TEXT)
     private val plus = ctx.icon(R.drawable.ic_add, Theme.TEXT_DIM)
     override val focusScale = 1.08f
-    override val restZ get() = if (addMode) 0f else 6f
-    override val hotZ get() = if (addMode) 0f else 24f
+    override val restZ get() = if (addMode) 0f else if (glow) 14f else 6f
+    override val hotZ get() = if (addMode) 0f else if (glow) 30f else 24f
+    override val glowAtRest get() = glow
+    override fun shadowTint() = if (glow && !addMode) Theme.duo(base()) else 0
     override fun shadowShape(o: android.graphics.Outline) = o.setOval(0, 0, width, height)
+
+    private fun base() = Theme.ACCENTS[colorIndex.coerceIn(0, Theme.ACCENTS.size - 1)].color
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
@@ -496,13 +508,17 @@ class AvatarView(ctx: Context, private val addMode: Boolean = false) : FocusView
             plus.setBounds(((w - s) / 2).toInt(), ((w - s) / 2).toInt(), ((w + s) / 2).toInt(), ((w + s) / 2).toInt())
             plus.draw(c)
         } else {
-            val base = Theme.ACCENTS[colorIndex.coerceIn(0, Theme.ACCENTS.size - 1)].color
-            fill.color = Theme.mix(base, Color.BLACK, 0.18f)
+            // Duo tone: the accent blends diagonally into a nearby hue.
+            val base = base()
+            fill.shader = LinearGradient(0f, 0f, w, w, base, Theme.duo(base), Shader.TileMode.CLAMP)
             c.drawOval(box, fill)
+            fill.shader = null
             val t = emoji.ifEmpty { letter }
             tp.textSize = w * if (emoji.isEmpty()) 0.46f else 0.52f
             tp.color = Color.WHITE
+            tp.setShadowLayer(w * 0.04f, 0f, w * 0.02f, Theme.withAlpha(Color.BLACK, 0.35f))
             c.drawText(t, (w - tp.measureText(t)) / 2, baseline(tp, w / 2), tp)
+            tp.clearShadowLayer()
         }
         drawRing(c, w / 2, box)
         // The lock sits above the focus ring, cut out from it by a thin gap.
@@ -538,8 +554,9 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
         val w = width.toFloat()
         box.set(0f, 0f, w, height.toFloat())
         if (filled) {
-            fill.color = Theme.accent
+            Theme.accentFill(fill, 0f, 0f, w, w)
             c.drawOval(box, fill)
+            fill.shader = null
             ic.setTint(Theme.onAccent)
         } else {
             Glass.draw(c, this, box, w / 2)
@@ -717,8 +734,10 @@ class PillButton(ctx: Context, var text: String, iconRes: Int, private val prima
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
-        fill.color = if (primary) Theme.accent else Theme.float
+        fill.color = Theme.float
+        if (primary) Theme.accentFill(fill, 0f, 0f, box.right, h)
         c.drawRoundRect(box, h / 2, h / 2, fill)
+        fill.shader = null
         val fg = if (primary) Theme.onAccent else Theme.TEXT
         var x = if (text.isEmpty()) (width - Theme.px(40f)) / 2 else Theme.px(44f)
         if (ic != null) {
@@ -908,8 +927,9 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             val bw = tb.measureText(badge) + Theme.px(28f)
             val bh = Theme.px(40f)
             val bx = Theme.px(18f)
-            fill.color = Theme.accent
+            Theme.accentFill(fill, bx, bx, bx + bw, bx + bh)
             c.drawRoundRect(bx, bx, bx + bw, bx + bh, bh / 2, bh / 2, fill)
+            fill.shader = null
             tb.color = Theme.onAccent
             c.drawText(badge, bx + Theme.px(14f), baseline(tb, bx + bh / 2), tb)
         }
@@ -917,8 +937,9 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             val bh = Theme.px(6f)
             fill.color = Theme.withAlpha(Color.WHITE, 0.18f)
             c.drawRect(0f, h - bh, w, h, fill)
-            fill.color = Theme.accent
+            Theme.accentFill(fill, 0f, h - bh, w * progress, h)
             c.drawRect(0f, h - bh, w * progress, h, fill)
+            fill.shader = null
         }
         c.restore()
         drawRing(c, r)
@@ -1203,8 +1224,11 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         val av = avatar
         if (av != null) {
             // Profile picture in place of the icon.
-            fill.color = Theme.mix(Theme.ACCENTS[av.color.coerceIn(0, Theme.ACCENTS.size - 1)].color, Color.BLACK, 0.18f)
+            val base = Theme.ACCENTS[av.color.coerceIn(0, Theme.ACCENTS.size - 1)].color
+            val top = h / 2 - cs / 2
+            fill.shader = LinearGradient(cx - cs / 2, top, cx + cs / 2, top + cs, base, Theme.duo(base), Shader.TileMode.CLAMP)
             c.drawCircle(cx, h / 2, cs / 2, fill)
+            fill.shader = null
             val t = av.emoji.ifEmpty { av.initial }
             avatarText.textSize = cs * if (av.emoji.isEmpty()) 0.46f else 0.54f
             c.drawText(t, cx - avatarText.measureText(t) / 2, baseline(avatarText, h / 2), avatarText)
@@ -1578,8 +1602,9 @@ class LocationCard(ctx: Context) : View(ctx) {
         val cw = tChip.measureText(chip) + Theme.px(28f)
         val chH = Theme.px(38f)
         r.set(pad, pad, pad + cw, pad + chH)
-        fill.color = Theme.accent
+        Theme.accentFill(fill, r.left, r.top, r.right, r.bottom)
         c.drawRoundRect(r, chH / 2, chH / 2, fill)
+        fill.shader = null
         c.drawText(chip, pad + Theme.px(14f), baseline(tChip, pad + chH / 2), tChip)
         c.drawText(tCity.fit(city.ifEmpty { "Locating…" }, w * 0.55f), pad, pad + chH + Theme.px(62f), tCity)
         if (!lat.isNaN()) {

@@ -29,14 +29,46 @@ class ClockDream : DreamService() {
         fun mode(ctx: Context) = ctx.getSharedPreferences("state", Context.MODE_PRIVATE).getInt("dreamMode", AMBIENT)
         fun setMode(ctx: Context, m: Int) = ctx.getSharedPreferences("state", Context.MODE_PRIVATE).edit().putInt("dreamMode", m).apply()
 
+        private const val COMPONENTS = "screensaver_components"
+        private const val ENABLED = "screensaver_enabled"
+
         /** True unless the screensaver was turned off in Scene's settings. */
         fun isOn(ctx: Context) = ctx.packageManager.getComponentEnabledSetting(component(ctx)) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+
+        /** True when Android lets Scene choose the system screensaver. Granted once through adb. */
+        fun canSelect(ctx: Context) =
+            ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+
+        /** True when Android will start Scene's screensaver. */
+        fun isSelected(ctx: Context): Boolean {
+            val r = ctx.contentResolver
+            val list = android.provider.Settings.Secure.getString(r, COMPONENTS).orEmpty()
+            val enabled = android.provider.Settings.Secure.getInt(r, ENABLED, 1) == 1
+            return enabled && list.split(',').firstOrNull() == component(ctx).flattenToString()
+        }
 
         /** Off removes Scene from Android's screensaver list. Device-wide. */
         fun setOn(ctx: Context, on: Boolean) {
             ctx.packageManager.setComponentEnabledSetting(component(ctx),
                 if (on) PackageManager.COMPONENT_ENABLED_STATE_DEFAULT else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP)
+            select(ctx)
+        }
+
+        /** Makes Android's screensaver match Scene's setting, when Android allows it. */
+        fun select(ctx: Context) {
+            if (!canSelect(ctx)) return
+            val r = ctx.contentResolver
+            try {
+                if (isOn(ctx)) {
+                    android.provider.Settings.Secure.putString(r, COMPONENTS, component(ctx).flattenToString())
+                    android.provider.Settings.Secure.putInt(r, ENABLED, 1)
+                } else if (isSelected(ctx)) {
+                    android.provider.Settings.Secure.putInt(r, ENABLED, 0)
+                }
+            } catch (e: SecurityException) {
+                // Permission was revoked.
+            }
         }
     }
 

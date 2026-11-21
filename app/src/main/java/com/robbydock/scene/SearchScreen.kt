@@ -28,6 +28,8 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
 
     companion object {
         const val SPEECH_REQUEST = 41
+        /** Popular titles added to the row at a time. */
+        const val BATCH = 20
         /** Field and results share the screen's side margins. Rows scroll under soft edges. */
         const val RES_X = 96f
         const val RES_W = 1728f
@@ -217,7 +219,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
      * A sideways row that spans the whole screen. Items start at the side margin, scroll under
      * soft faded edges, and have room above and below for focus scale and shadows.
      */
-    private fun edgeRow(y: Float, itemH: Float, gap: Float, items: List<View>, tagFirst: Boolean, widthOf: (View) -> Int = { -2 }) {
+    private fun edgeRow(y: Float, itemH: Float, gap: Float, items: List<View>, tagFirst: Boolean, widthOf: (View) -> Int = { -2 }): LinearLayout {
         val padV = 28f
         val scroller = android.widget.HorizontalScrollView(act).apply {
             isHorizontalScrollBarEnabled = false
@@ -238,6 +240,46 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
             if (i == 0 && tagFirst) v.tag = "first"
             row.addView(v, LinearLayout.LayoutParams(widthOf(v), Theme.ipx(itemH)).apply { if (i < items.size - 1) rightMargin = Theme.ipx(gap) })
         }
+        return row
+    }
+
+    /** Fills [row] with popular titles in batches, loading more as focus nears the end. */
+    private fun popularFeed(row: LinearLayout, first: List<SearchHit>) {
+        val buffer = ArrayDeque(first)
+        val seen = HashSet(first.map { it.id })
+        var page = 1
+        var fetching = false
+        var more: () -> Unit = {}
+        val append = { n: Int ->
+            repeat(minOf(n, buffer.size)) {
+                val h = buffer.removeFirst()
+                val card = PosterCard(act).apply {
+                    title = h.name
+                    year = h.year
+                    setOnClickListener { act.openDetail(h.type, h.id) }
+                }
+                loadPoster(card, h)
+                val index = row.childCount
+                card.setOnFocusChangeListener { _, has -> if (has && index >= row.childCount - 8) more() }
+                (row.getChildAt(row.childCount - 1)?.layoutParams as? LinearLayout.LayoutParams)?.rightMargin = Theme.ipx(28f)
+                row.addView(card, LinearLayout.LayoutParams(Theme.ipx(200f), Theme.ipx(300f)))
+            }
+        }
+        more = {
+            if (buffer.size >= BATCH) append(BATCH)
+            else if (!fetching && page < 40) {
+                fetching = true
+                val gen = generation
+                Net.run({ Stremio.popular(page) }) { hits ->
+                    fetching = false
+                    if (gen != generation || closed || hits.isNullOrEmpty()) return@run
+                    page++
+                    hits.filter { seen.add(it.id) }.forEach { buffer.addLast(it) }
+                    append(BATCH)
+                }
+            }
+        }
+        append(BATCH)
     }
 
     private fun pillRow(y: Float, header: String, pills: List<View>, tagFirst: Boolean) {
@@ -321,14 +363,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
                         status.visibility = VISIBLE
                         return@run
                     }
-                    val cards = hits.take(20).map { h ->
-                        PosterCard(act).apply {
-                            title = h.name
-                            year = h.year
-                            setOnClickListener { act.openDetail(h.type, h.id) }
-                        }.also { loadPoster(it, h) }
-                    }
-                    edgeRow(rowY, 300f, 28f, cards, false) { Theme.ipx(200f) }
+                    popularFeed(edgeRow(rowY, 300f, 28f, emptyList(), false) { Theme.ipx(200f) }, hits)
                 }
             }
             y += 420f

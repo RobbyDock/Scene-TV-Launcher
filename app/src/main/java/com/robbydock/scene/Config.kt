@@ -38,10 +38,13 @@ class Config {
     var names = LinkedHashMap<String, String>()
     /** Home background: 0 blurred artwork, 1 accent gradient, 2 solid. */
     var background = 0
-    /** The app row under the hero: 0 pinned, 1 recent, 2 none. */
-    var homeRow = 0
+    /** App rows under the hero. Either, both or neither. */
+    var showPinned = true
+    var showRecent = false
     /** Apps opened from Scene, newest first, at most [MAX_RECENTS]. */
     var recents = ArrayList<String>()
+    /** Apps removed from recents, by package, with the time removed. They return once used again. */
+    var recentsRemoved = LinkedHashMap<String, Long>()
     var city = ""
     var lat = Double.NaN
     var lon = Double.NaN
@@ -81,10 +84,12 @@ class Config {
             .put("splash", splash)
             .put("appSort", appSort)
             .put("appOrder", JSONArray(appOrder))
-            .put("homeRow", homeRow)
+            .put("showPinned", showPinned)
+            .put("showRecent", showRecent)
             .put("background", background)
             .put("names", JSONObject().apply { for ((k, v) in names) put(k, v) })
             .put("recents", JSONArray(recents))
+            .put("recentsRemoved", JSONObject().apply { for ((k, v) in recentsRemoved) put(k, v) })
             .put("city", city)
         if (hasLocation) o.put("lat", lat).put("lon", lon)
         return o
@@ -129,7 +134,10 @@ class Config {
         splash = o.optBoolean("splash", true)
         appSort = o.optInt("appSort", 0).coerceIn(0, 2)
         appOrder = ArrayList(packages(o.optJSONArray("appOrder"), Limits.APP_ORDER))
-        homeRow = o.optInt("homeRow", 0).coerceIn(0, 2)
+        // Older files keep one row choice: 0 pinned, 1 recent, 2 none.
+        val row = o.optInt("homeRow", 0).coerceIn(0, 2)
+        showPinned = o.optBoolean("showPinned", row == 0)
+        showRecent = o.optBoolean("showRecent", row == 1)
         background = o.optInt("background", 0).coerceIn(0, 2)
         val n = LinkedHashMap<String, String>()
         o.optJSONObject("names")?.let { m ->
@@ -141,6 +149,14 @@ class Config {
         }
         names = n
         recents = ArrayList(packages(o.optJSONArray("recents"), MAX_RECENTS))
+        val gone = LinkedHashMap<String, Long>()
+        o.optJSONObject("recentsRemoved")?.let { m ->
+            for (k in m.keys()) {
+                if (gone.size >= Limits.HIDDEN) break
+                if (Guard.isPackageName(k)) gone[k] = m.optLong(k, 0L)
+            }
+        }
+        recentsRemoved = gone
         city = Guard.cleanText(o.optString("city", ""), Limits.CITY)
         val la = o.optDouble("lat", Double.NaN)
         val lo = o.optDouble("lon", Double.NaN)

@@ -39,6 +39,7 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
         for ((i, p) in Profiles.list.withIndex()) {
             val (x, y) = slot(i)
             val av = AvatarView(act).apply {
+                glow = true
                 letter = p.initial
                 emoji = p.emoji
                 colorIndex = p.color
@@ -120,6 +121,7 @@ class PasscodeScreen(
         isFocusableInTouchMode = true
         defaultFocusHighlightEnabled = false
         val av = AvatarView(act).apply {
+            glow = true
             letter = profile.initial
             emoji = profile.emoji
             colorIndex = profile.color

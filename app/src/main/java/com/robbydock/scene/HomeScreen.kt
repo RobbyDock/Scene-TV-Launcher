@@ -150,7 +150,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private var appsSig = ""
     private var contSig = ""
     private fun appsSignature() = act.apps.joinToString("|") { "${it.pkg}:${it.label}:${it.icon != null}" } +
-        if (act.cfg.homeRow == 1) "/" + act.recentApps().joinToString(",") else ""
+        if (act.cfg.showRecent) "/" + act.recentApps().joinToString(",") else ""
     private fun contSignature() = act.continueItems.joinToString("|") { it.toJson().toString() } + "/${act.continueLoading}/${act.continueError}"
 
     fun appsChanged() { if (appsSignature() != appsSig) rebuild() }
@@ -200,7 +200,9 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val cfg = act.cfg
         var y: Float
         val pinnedTarget: Float
-        if (cfg.spotlight) {
+        // The spotlight needs a Stremio library. Signed out, a sign-in card takes its place.
+        val hero = cfg.spotlight && Stremio.signedIn(act)
+        if (hero) {
             buildSpotlight()
             y = 780f
             buildContinue(y)
@@ -208,30 +210,63 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             pinnedTarget = -(y - 560f)
         } else {
             art(null)
-            y = 220f
+            y = if (cfg.spotlight) buildConnect(190f) + 64f else 220f
             pinnedTarget = 0f
         }
         pinTiles.clear()
-        y = when (cfg.homeRow) {
-            1 -> buildRecent(y, pinnedTarget)
-            2 -> y - 56f
-            else -> buildPinned(y, pinnedTarget)
+        val rowsTop = y
+        if (cfg.showPinned) y = buildPinned(y, pinnedTarget)
+        if (cfg.showRecent) {
+            // A second row scrolls further, so it sits where the first one would.
+            val below = cfg.showPinned
+            if (below) y += 56f
+            y = buildRecent(y, pinnedTarget - (y - rowsTop))
         }
+        if (!cfg.showPinned && !cfg.showRecent) y -= 56f
         buildGrid(y + 56f)
         if (selected >= act.continueItems.size) selected = 0
-        if (cfg.spotlight) select(selected, immediate = true)
+        if (hero) select(selected, immediate = true)
 
         // Home uses the solid background mode.
         ambience.mode = 2
-        ambience.hero = act.cfg.spotlight
+        ambience.hero = hero
         // Hides the art layer when there is no spotlight.
-        backdrop.visibility = if (act.cfg.spotlight) VISIBLE else INVISIBLE
+        backdrop.visibility = if (hero) VISIBLE else INVISIBLE
         backdrop.themeChanged()
         ambience.invalidate()
         val target = keep?.let { keyed[it] }
         if (target != null) target.focusQuietly()
         else if (act.root.findFocus() == null) focusDefault()
         invalidateAll()
+    }
+
+    /** Signed-out stand-in for the spotlight: what Stremio adds, and how to connect it. Returns its bottom edge. */
+    private fun buildConnect(y: Float): Float {
+        val h = 420f
+        content.place(ConnectCard(act), EDGE, y, 1920f - EDGE * 2, h)
+        content.place(act.label("Bring your Stremio library home", 52f, Theme.TEXT, Theme.BOLD), EDGE + 64f, y + 60f, 1100f, 70f)
+        content.place(act.label("Sign in with your phone to see Continue watching, new episodes and a full-screen spotlight for what you're watching.",
+            28f, Theme.TEXT_DIM, Theme.REGULAR, 2), EDGE + 64f, y + 146f, 980f, 84f)
+        val row = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false }
+        val installed = Apps.isInstalled(act.packageManager, Config.STREMIO)
+        val actions = listOfNotNull(
+            Btn("Sign in", R.drawable.ic_qr_code_2) { act.openSignIn() },
+            if (!installed) Btn("Get Stremio", R.drawable.ic_shop) { act.installStremio() } else null,
+            Btn("Hide", R.drawable.ic_visibility_off) { act.cfg.spotlight = false; act.save(); rebuild() },
+        )
+        for ((i, b) in actions.withIndex()) {
+            val pb = PillButton(act, b.label, b.icon, i == 0)
+            pb.focusKey = "connect:$i"
+            pb.id = View.generateViewId()
+            pb.setOnClickListener { b.run() }
+            row.addView(pb, LinearLayout.LayoutParams(-2, Theme.ipx(80f)).apply { rightMargin = Theme.ipx(20f) })
+            keyed["connect:$i"] = pb
+            scrollTarget[pb] = 0f
+            if (i == 0) primaryButton = pb
+        }
+        content.place(row, EDGE + 64f, y + 280f, 1200f, 80f)
+        linkTopRow()
+        return y + h
     }
 
     private fun buildSpotlight() {
@@ -467,7 +502,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             val tile = AppTile(act)
             bindApp(tile, pkg, false, "rec:")
             strip.add(tile)
-            if (i == 0) keyed["pin:0"] = tile
+            if (i == 0) keyed.putIfAbsent("pin:0", tile)
             scrollTarget[tile] = target
         }
         return y + 72f + TILE_H
@@ -581,7 +616,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     /** Starts a move on the first pinned app, or on All apps when there is no pinned row to arrange. */
     fun arrange() {
-        val pins = act.cfg.homeRow == 0 && act.cfg.pinned.size > 1
+        val pins = act.cfg.showPinned && act.cfg.pinned.size > 1
         when {
             pins -> startMove(false, act.cfg.pinned[0].pkg)
             gridPkgs.isNotEmpty() -> startMove(true, gridPkgs[0])
@@ -654,6 +689,40 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         keyed["pin:0"] = pinTiles.firstOrNull() ?: keyed["pin:add"] ?: search
         keyed["grid:0"] = gridTiles.firstOrNull() ?: search
         tiles[j].requestFocus()
+    }
+
+    /** Up and Down move exactly one row and keep the horizontal position. */
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        if (focused == null || moving || (direction != FOCUS_UP && direction != FOCUS_DOWN)) return super.focusSearch(focused, direction)
+        val linked = if (direction == FOCUS_UP) focused.nextFocusUpId else focused.nextFocusDownId
+        if (linked != View.NO_ID || !isInside(content, focused)) return super.focusSearch(focused, direction)
+        return rowNeighbour(focused, direction == FOCUS_DOWN) ?: super.focusSearch(focused, direction)
+    }
+
+    private fun isInside(parent: View, v: View): Boolean {
+        var p = v.parent
+        while (p is View) { if (p === parent) return true; p = p.parent }
+        return false
+    }
+
+    // Picks the nearest row above or below, then the item in it closest to the focused one horizontally.
+    private fun rowNeighbour(from: View, down: Boolean): View? {
+        val all = ArrayList<View>()
+        content.addFocusables(all, if (down) FOCUS_DOWN else FOCUS_UP)
+        val at = IntArray(2)
+        fun box(v: View): FloatArray { v.getLocationOnScreen(at); return floatArrayOf(at[0].toFloat(), at[1].toFloat(), at[0] + v.width.toFloat(), at[1] + v.height.toFloat()) }
+        val f = box(from)
+        val fx = (f[0] + f[2]) / 2
+        val gap = Theme.px(8f)
+        val rows = all.filter { it !== from && it.isShown }.map { it to box(it) }
+            .filter { (_, b) -> if (down) b[1] >= f[3] - gap else b[3] <= f[1] + gap }
+        if (rows.isEmpty()) return null
+        val edge = if (down) rows.minOf { it.second[1] } else rows.maxOf { it.second[3] }
+        val tol = Theme.px(40f)
+        val row = rows.filter { (_, b) -> if (down) b[1] - edge < tol else edge - b[3] < tol }
+        val screenW = resources.displayMetrics.widthPixels
+        val onScreen = row.filter { (_, b) -> b[2] > 0 && b[0] < screenW }.ifEmpty { row }
+        return onScreen.minByOrNull { (_, b) -> kotlin.math.abs((b[0] + b[2]) / 2 - fx) }?.first
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -1221,7 +1290,37 @@ class ProgressBar(ctx: Context) : View(ctx) {
         val h = height.toFloat()
         p.color = Theme.withAlpha(Color.WHITE, 0.18f)
         c.drawRoundRect(0f, 0f, width.toFloat(), h, h / 2, h / 2, p)
-        p.color = Theme.accent
+        Theme.accentFill(p, 0f, 0f, maxOf(h, width * progress), h)
         c.drawRoundRect(0f, 0f, maxOf(h, width * progress), h, h / 2, h / 2, p)
+        p.shader = null
+    }
+}
+
+
+/** Backdrop for the signed-out card: an accent glow over the surface, with the Stremio mark at the right. */
+@SuppressLint("ViewConstructor")
+class ConnectCard(ctx: Context) : View(ctx) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val box = RectF()
+    private val mark = ctx.getDrawable(R.drawable.ic_stremio)
+
+    init { elevation = Theme.px(12f) ; outlineProvider = object : android.view.ViewOutlineProvider() {
+        override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, Theme.px(Theme.R_CARD)) }
+    } }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat(); val r = Theme.px(Theme.R_CARD)
+        box.set(0f, 0f, w, h)
+        fill.shader = LinearGradient(0f, 0f, w, h, Theme.surface, Theme.withAlpha(Theme.accent, 0.35f), Shader.TileMode.CLAMP)
+        c.drawRoundRect(box, r, r, fill)
+        glow.shader = RadialGradient(w * 0.82f, h * 0.5f, h * 0.9f, Theme.withAlpha(Theme.accent, 0.45f), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        c.save(); c.clipRect(box); c.drawRoundRect(box, r, r, glow); c.restore()
+        mark?.let {
+            val s = (h * 0.62f).toInt()
+            val cx = (w * 0.82f).toInt(); val cy = (h * 0.5f).toInt()
+            it.setBounds(cx - s / 2, cy - s / 2, cx + s / 2, cy + s / 2)
+            it.draw(c)
+        }
     }
 }

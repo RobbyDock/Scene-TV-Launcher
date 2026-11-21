@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">Scene</string>
     <string name="dream_label">Scene</string>
+    <string name="remap_label">Scene Remote Buttons</string>
+    <string name="remap_description">Lets the app buttons on your remote open the apps you choose in Scene. Scene only reacts to buttons you map. It does not read the screen or what you type.</string>
 </resources>
