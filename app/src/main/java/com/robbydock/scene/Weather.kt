@@ -35,6 +35,17 @@ object Weather {
 
     fun clearCache(ctx: Context) = Store.delete(ctx, CACHE)
 
+    class Day(val date: java.time.LocalDate, val code: Int, val high: Double, val low: Double)
+
+    /** The next five days, today first. Fetched only when the forecast is opened. */
+    fun forecast(lat: Double, lon: Double): List<Day> {
+        val o = Net.getJson("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+            "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=5").getJSONObject("daily")
+        val t = o.getJSONArray("time"); val c = o.getJSONArray("weather_code")
+        val hi = o.getJSONArray("temperature_2m_max"); val lo = o.getJSONArray("temperature_2m_min")
+        return (0 until t.length()).map { Day(java.time.LocalDate.parse(t.getString(it)), c.optInt(it), hi.optDouble(it), lo.optDouble(it)) }
+    }
+
     /** Searches places by name. */
     fun searchPlaces(query: String): List<Place> {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
@@ -121,5 +132,16 @@ object Weather {
         in 71..77, 85, 86 -> "Snow" to R.drawable.ic_weather_snowy
         in 95..99 -> "Storms" to R.drawable.ic_thunderstorm
         else -> "–" to R.drawable.ic_cloud
+    }
+
+    /** A colour for the weather icon, so sun, rain and snow read apart at a glance. */
+    fun tint(code: Int, day: Boolean): Int = when (code) {
+        0, 1, 2 -> if (day) Theme.STAR else 0xFFB9C3FF.toInt()
+        3 -> 0xFFB4BDCB.toInt()
+        45, 48 -> 0xFFA7AFB8.toInt()
+        in 51..67, in 80..82 -> 0xFF5DADFF.toInt()
+        in 71..77, 85, 86 -> 0xFFD6ECFF.toInt()
+        in 95..99 -> 0xFFB98CFF.toInt()
+        else -> Theme.STAR
     }
 }

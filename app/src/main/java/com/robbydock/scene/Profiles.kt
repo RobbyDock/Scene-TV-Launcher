@@ -18,6 +18,8 @@ class Profile(val id: String, var name: String, var color: Int) {
     /** PBKDF2 hash and salt of an admin's recovery code, empty when none is set. */
     var recoveryHash = ""
     var recoverySalt = ""
+    /** Kids profiles have no Spotlight and no Settings. Leaving one takes a passcode. Never an admin. */
+    var kids = false
     val locked get() = codeHash.isNotEmpty()
     val hasRecovery get() = recoveryHash.isNotEmpty()
     val initial get() = Guard.initial(name)
@@ -109,6 +111,7 @@ object Profiles {
                 emoji = p.optString("emoji").takeIf { it in EMOJI } ?: ""
                 // The older "owner" flag counts as admin.
                 admin = p.optBoolean("admin", p.optBoolean("owner", false))
+                kids = !admin && p.optBoolean("kids", false)
                 if (admin) {
                     recoveryHash = p.optString("rhash")
                     recoverySalt = p.optString("rsalt")
@@ -130,7 +133,7 @@ object Profiles {
         val a = JSONArray()
         for (p in list) {
             a.put(JSONObject().put("id", p.id).put("name", p.name).put("color", p.color).put("hash", p.codeHash).put("salt", p.codeSalt).put("emoji", p.emoji)
-                .put("admin", p.admin).put("rhash", p.recoveryHash).put("rsalt", p.recoverySalt))
+                .put("admin", p.admin).put("rhash", p.recoveryHash).put("rsalt", p.recoverySalt).put("kids", p.kids))
         }
         val text = JSONObject().put("profiles", a).put("current", currentId).put("askOnWake", askOnWake).toString()
         return Store.writeText(ctx, FILE, text) && Store.writeText(ctx, LAST_GOOD, text)
@@ -222,6 +225,8 @@ object Profiles {
      */
     fun remove(ctx: Context, id: String, landOn: Profile? = null): Boolean {
         if (list.size <= 1 || list.none { it.id == id }) return false
+        // At least one profile must stay outside Kids.
+        if (list.filter { it.id != id }.all { it.kids }) return false
         // [landOn] is a profile whose passcode the caller has just checked.
         val landing = if (currentId == id) (landOn?.takeIf { it.id != id && it in list } ?: landingAfter(id) ?: return false) else null
         list.removeAll { it.id == id }
@@ -238,6 +243,17 @@ object Profiles {
         save(ctx)
         return true
     }
+
+    /** Turns Kids on or off for [p]. False for an admin, who can't be a Kids profile. */
+    fun setKids(ctx: Context, p: Profile, on: Boolean): Boolean {
+        if (on && p.admin) return false
+        p.kids = on
+        save(ctx)
+        return true
+    }
+
+    /** Admins with a passcode. Any of their passcodes lets someone leave a Kids profile. */
+    fun lockedAdmins() = list.filter { it.admin && it.locked }
 
     /** Checks a recovery code with the slow hash. */
     fun checkRecovery(p: Profile, input: String) = p.admin && Recovery.matches(input, p.recoverySalt, p.recoveryHash)

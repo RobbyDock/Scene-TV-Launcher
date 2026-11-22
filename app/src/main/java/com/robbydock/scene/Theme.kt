@@ -49,10 +49,6 @@ object Theme {
     val MEDIUM_MS get() = (220 * motionScale).toLong()
     /** Screen transitions: overlays fade, and side panels slide in at full motion. */
     val SCREEN_MS get() = (260 * motionScale).toLong()
-    /** Small state changes: presses, icon swaps. */
-    val FAST_MS get() = if (motion == 2) 0L else 120L
-    /** Hero swaps and larger surfaces. */
-    val SLOW_MS get() = when (motion) { 0 -> 360L; 1 -> 200L; else -> 0L }
     /** Background art and screensaver. */
     val AMBIENT_MS get() = when (motion) { 0 -> 900L; 1 -> 600L; else -> 0L }
     val moves get() = motion == 0
@@ -93,14 +89,14 @@ object Theme {
 
     private var fontsLoaded = false
 
-    var accentIndex = 0
+    var accentIndex = 1
         private set
     var trueDark = false
         private set
     var glass = 0.55f
         private set
 
-    var accent = ACCENTS[0].color; private set
+    var accent = ACCENTS[1].color; private set
     var onAccent = 0; private set
     var bg = BRAND_BG; private set
     var surface = 0; private set
@@ -133,6 +129,7 @@ object Theme {
     }
 
     fun init(ctx: Context) {
+        FrameIcons.clear()
         // The whole window, including any space under hidden system bars.
         val b = measured ?: if (android.os.Build.VERSION.SDK_INT >= 30) {
             ctx.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds

@@ -7,6 +7,8 @@
         <item name="android:navigationBarColor">@color/scene_bg</item>
         <item name="android:statusBarColor">@color/scene_bg</item>
         <item name="android:windowAnimationStyle">@null</item>
+        <!-- Scene plays its own sounds when Sounds is on; Android's view clicks would double them. -->
+        <item name="android:soundEffectsEnabled">false</item>
         <item name="android:windowContentTransitions">false</item>
         <item name="android:windowShowWallpaper">false</item>
         <item name="android:ambientShadowAlpha">0.22</item>

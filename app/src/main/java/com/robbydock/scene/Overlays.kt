@@ -199,7 +199,7 @@ class Sheet(
 ) : OverlayBase(act, 0.5f, haze = true) {
     override val tapAway = true
     /** [profile] shows that profile's picture in place of [icon]. */
-    class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val run: () -> Unit)
+    class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val tint: Int = 0, val run: () -> Unit)
 
     init {
         val w = 760f
@@ -246,6 +246,7 @@ class Sheet(
             val row = SettingRow(act, a.icon, a.label).apply {
                 this.subtitle = a.sub
                 avatar = a.profile
+                iconTint = a.tint
                 trail = if (a.checked) SettingRow.Trail.CHECK else SettingRow.Trail.NONE
                 checked = a.checked
                 divider = false
@@ -275,8 +276,9 @@ class AppPicker(
         val list = act.apps.filter { it.pkg !in act.cfg.hidden && (pick != null || !act.isPinned(it.pkg)) }
         val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
         val grid = FrameLayout(act).apply { clipChildren = false }
-        val cols = 8
         val pitchX = HomeScreen.TILE + HomeScreen.TILE_GAP
+        // As many columns as the screen holds.
+        val cols = ((Theme.W - 2 * 96f + HomeScreen.TILE_GAP) / pitchX).toInt().coerceAtLeast(4)
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
@@ -345,8 +347,9 @@ class RemapPicker(
         val list = act.apps.filter { it.pkg !in act.cfg.hidden && it.pkg != act.packageName }
         val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
         val grid = FrameLayout(act).apply { clipChildren = false }
-        val cols = 8
         val pitchX = HomeScreen.TILE + HomeScreen.TILE_GAP
+        // As many columns as the screen holds.
+        val cols = ((Theme.W - 2 * 96f + HomeScreen.TILE_GAP) / pitchX).toInt().coerceAtLeast(4)
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))

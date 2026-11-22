@@ -22,7 +22,7 @@ import java.util.Locale
  * Laid out on an 800 x 820 design box.
  */
 class OnboardArt(ctx: Context) : FrameLayout(ctx) {
-    enum class Kind { WELCOME, PROFILE, HOME, WEATHER, VOICE, SCREENSAVER, STREMIO, DONE }
+    enum class Kind { WELCOME, PROFILE, HOME, WEATHER, VOICE, MUSIC, SCREENSAVER, STREMIO, DONE }
 
     var kind = Kind.WELCOME
         private set
@@ -58,6 +58,12 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
         clipChildren = false
     }
 
+    private companion object {
+        /** The shimmer repeats this often and takes [SHINE_SWEEP_MS] to cross. */
+        const val SHINE_MS = 5200L
+        const val SHINE_SWEEP_MS = 1600L
+    }
+
     private fun x(v: Float) = Theme.px(v)
 
     // Design-space layout: the picture and its caption sit centred as one block.
@@ -67,7 +73,7 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
 
     private fun boxHeight() = when (kind) {
         Kind.PROFILE -> 300f
-        Kind.HOME, Kind.VOICE -> 420f
+        Kind.HOME, Kind.VOICE, Kind.MUSIC -> 420f
         Kind.WEATHER -> 150f
         else -> 428f
     }
@@ -112,6 +118,7 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
         Kind.HOME -> if (choice == 1) "Home keeps opening the TV's own launcher" else "Home on your remote opens Scene"
         Kind.WEATHER -> arrayOf("Uses this TV's approximate location", "Pick a city by name", "Just the clock and date").getOrElse(choice) { "" }
         Kind.VOICE -> if (choice == 1) "You can allow it later in Settings" else "Listens only while the mic button is on"
+        Kind.MUSIC -> if (choice == 1) "You can allow it later in Settings" else "Reads only the song that is playing"
         Kind.SCREENSAVER -> arrayOf("Starts after a few idle minutes", "Dim enough for a dark room", "Your TV may still use its own").getOrElse(choice) { "" }
         Kind.STREMIO -> if (choice == 0) "Continue watching with one-press resume" else "Just your apps, nothing else"
     }
@@ -121,7 +128,7 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
 
     private fun animating() = Theme.motion == 0 && when (kind) {
         Kind.HOME -> choice != 1
-        Kind.VOICE -> choice != 1
+        Kind.VOICE, Kind.MUSIC -> choice != 1
         Kind.SCREENSAVER -> choice == 0
         else -> false
     }
@@ -132,7 +139,8 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
             kind == Kind.PROFILE -> drawProfile(c)
             kind == Kind.HOME -> drawHome(c)
             kind == Kind.WEATHER -> drawWeather(c)
-            kind == Kind.VOICE -> drawVoice(c)
+            kind == Kind.VOICE -> drawVoice(c, R.drawable.ic_mic)
+            kind == Kind.MUSIC -> drawVoice(c, R.drawable.ic_music_note)
         }
         if (animating()) postInvalidateOnAnimation()
     }
@@ -140,6 +148,26 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
     override fun dispatchDraw(c: Canvas) {
         super.dispatchDraw(c)
         if (kind == Kind.DONE) drawCheck(c)
+    }
+
+    private val shine = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_ATOP) }
+
+    /** A soft band of light crosses the picture now and then. It lights only what is drawn. At full motion only. */
+    override fun draw(c: Canvas) {
+        if (!Theme.moves || width == 0) { super.draw(c); return }
+        val layer = c.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        super.draw(c)
+        val f = (SystemClock.uptimeMillis() % SHINE_MS) / SHINE_SWEEP_MS.toFloat()
+        if (f < 1f) {
+            val w = width.toFloat()
+            val band = w * 0.35f
+            val x0 = -band + (w + band * 2) * f
+            shine.shader = LinearGradient(x0, 0f, x0 + band, height * 0.4f,
+                intArrayOf(0x00FFFFFF, 0x1FFFFFFF, 0x00FFFFFF), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+            c.drawRect(0f, 0f, w, height.toFloat(), shine)
+        }
+        c.restoreToCount(layer)
+        postInvalidateOnAnimation()
     }
 
     private fun accentGradient(l: Float, t: Float, rr: Float, b: Float) {
@@ -222,7 +250,7 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
     }
 
     private fun icon(c: Canvas, res: Int, px: Float, py: Float, size: Float, color: Int) {
-        val d = context.icon(res, color)
+        val d = context.frameIcon(res, color)
         val h = x(size) / 2
         d.setBounds((px - h).toInt(), (py - h).toInt(), (px + h).toInt(), (py + h).toInt())
         d.draw(c)
@@ -345,7 +373,8 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
 
     // ---------------------------------------------------------------- voice
 
-    private fun drawVoice(c: Canvas) {
+    /** A glowing badge with [glyph]; pulses while allowed, slashed when not now is chosen. */
+    private fun drawVoice(c: Canvas, glyph: Int) {
         val px = x(cx)
         val py = x(cy)
         val off = choice == 1
@@ -368,7 +397,7 @@ class OnboardArt(ctx: Context) : FrameLayout(ctx) {
         c.drawCircle(px, py, rad, p)
         p.clearShadowLayer()
         p.shader = null
-        icon(c, R.drawable.ic_mic, px, py, 84f, if (off) Theme.TEXT_DIM else Theme.onAccent)
+        icon(c, glyph, px, py, 84f, if (off) Theme.TEXT_DIM else Theme.onAccent)
         if (off) {
             // Slash across the mic.
             p.style = Paint.Style.STROKE

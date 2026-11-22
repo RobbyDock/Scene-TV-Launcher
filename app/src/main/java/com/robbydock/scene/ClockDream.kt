@@ -35,7 +35,7 @@ class ClockDream : DreamService() {
         /** True unless the screensaver was turned off in Scene's settings. */
         fun isOn(ctx: Context) = ctx.packageManager.getComponentEnabledSetting(component(ctx)) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
 
-        /** True when Android lets Scene choose the system screensaver. Granted once through adb. */
+        /** True when Android lets Scene choose the system screensaver itself. Rare; most TVs never grant it. */
         fun canSelect(ctx: Context) =
             ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
 
@@ -46,6 +46,13 @@ class ClockDream : DreamService() {
             val enabled = android.provider.Settings.Secure.getInt(r, ENABLED, 1) == 1
             return enabled && list.split(',').firstOrNull() == component(ctx).flattenToString()
         }
+
+        /** Android's own screensaver picker, on devices that have one. */
+        fun pickerIntent(ctx: Context): android.content.Intent? =
+            android.content.Intent(android.provider.Settings.ACTION_DREAM_SETTINGS).takeIf { it.resolveActivity(ctx.packageManager) != null }
+
+        /** Home shows Scene's screensaver itself after this long without input, when Android won't start it. */
+        const val HOME_IDLE_MS = 5 * 60_000L
 
         /** Off removes Scene from Android's screensaver list. Device-wide. */
         fun setOn(ctx: Context, on: Boolean) {
@@ -98,7 +105,7 @@ class ClockDream : DreamService() {
      * Soft fields of colour that drift on slow, unrelated orbits, with a small clock that moves
      * every [MOVE_MS]. Drawn live.
      */
-    private class Ambient(ctx: Context, accent: Int, private val clockMode: Int, private val motion: Int) : View(ctx) {
+    class Ambient(ctx: Context, accent: Int, private val clockMode: Int, private val motion: Int) : View(ctx) {
         private val scene = Scenery.pick(accent)
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
         private val scale = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.DITHER_FLAG)
@@ -165,7 +172,7 @@ class ClockDream : DreamService() {
         }
     }
 
-    private class Face(ctx: Context, accent: Int, private val clockMode: Int, private val motion: Int) : View(ctx) {
+    class Face(ctx: Context, accent: Int, private val clockMode: Int, private val motion: Int) : View(ctx) {
         private val time = textPaint(180f, Theme.mix(accent, Theme.TEXT, 0.35f), Theme.BOLD)
         private val date = textPaint(44f, Theme.withAlpha(Theme.TEXT_DIM, 0.8f), Theme.MEDIUM)
         private var cx = 0.5f
@@ -214,5 +221,37 @@ class ClockDream : DreamService() {
             c.drawText(t, x, baseline(time, y - Theme.px(30f)), time)
             c.drawText(d, x, baseline(date, y + Theme.px(90f)), date)
         }
+    }
+}
+
+/**
+ * Scene's screensaver drawn over Home, for TVs where Android can't start it. Shows the music
+ * screensaver while a song plays. Any key or touch ends it.
+ */
+class SaverScreen(act: HomeActivity) : OverlayBase(act, 1f) {
+    init {
+        val cfg = act.cfg
+        val view = when {
+            NowPlaying.saver(act) && NowPlaying.state == 1 -> MusicSaver(act)
+            ClockDream.mode(act) == ClockDream.AMBIENT -> ClockDream.Ambient(act, Theme.accent, cfg.clock, cfg.motion)
+            else -> ClockDream.Face(act, Theme.accent, cfg.clock, cfg.motion)
+        }
+        addView(view, LayoutParams(-1, -1))
+        isFocusable = true
+        isFocusableInTouchMode = true
+        post { requestFocus() }
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_UP) (context as HomeActivity).pop()
+        return true
+    }
+
+    override fun onInterceptTouchEvent(e: android.view.MotionEvent) = true
+
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        if (e.actionMasked == android.view.MotionEvent.ACTION_UP) (context as HomeActivity).pop()
+        return true
     }
 }

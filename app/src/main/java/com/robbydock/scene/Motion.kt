@@ -31,8 +31,6 @@ object Motion {
 
     /** Small overshoot, for focus and pop-ins. */
     val SPRING = Spring(0.62f, 1.1f)
-    /** No overshoot, for larger surfaces. */
-    val SETTLE = Spring(1f, 1.0f)
 
     private const val RISE = 18f
 

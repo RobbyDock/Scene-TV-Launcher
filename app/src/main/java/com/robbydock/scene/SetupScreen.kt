@@ -15,7 +15,7 @@ import android.widget.LinearLayout
 @SuppressLint("ViewConstructor")
 class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActivity.Returnable {
 
-    private enum class Step { WELCOME, PROFILE, HOME, WEATHER, VOICE, SCREENSAVER, STREMIO, DONE }
+    private enum class Step { WELCOME, PROFILE, HOME, WEATHER, VOICE, MUSIC, SCREENSAVER, STREMIO, DONE }
 
     /** The step after the profile; the home step is skipped once Scene is the home app. */
     private fun afterProfile() = if (isDefaultHome()) Step.WEATHER else Step.HOME
@@ -23,7 +23,10 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
     private fun micGranted() = act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     /** The step after weather; voice is skipped once the microphone is allowed. */
-    private fun afterWeather() = if (micGranted()) Step.SCREENSAVER else Step.VOICE
+    private fun afterWeather() = if (micGranted()) afterVoice() else Step.VOICE
+
+    /** The step after voice; music is skipped once Scene can see what is playing. */
+    private fun afterVoice() = if (NowPlaying.hasAccess(act) || !NowPlaying.available(act)) Step.SCREENSAVER else Step.MUSIC
 
     private var step = Step.WELCOME
 
@@ -36,16 +39,18 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
         var s = Step.values().getOrElse(act.statePrefs().getInt("setupStep", 0)) { Step.WELCOME }
         if (s == Step.PROFILE && !Profiles.needsFirstProfile) s = afterProfile()
         if (s == Step.HOME && isDefaultHome()) s = Step.WEATHER
-        if (s == Step.VOICE && micGranted()) s = Step.SCREENSAVER
-        if (s == Step.STREMIO && Stremio.signedIn(act)) s = Step.DONE
+        if (s == Step.VOICE && micGranted()) s = afterVoice()
+        if (s == Step.MUSIC && (NowPlaying.hasAccess(act) || !NowPlaying.available(act))) s = Step.SCREENSAVER
+        if (s == Step.STREMIO && Watch.signedIn(act)) s = Step.DONE
         return s
     }
 
     override fun onBack(): Boolean {
-        // Back steps back through setup; on the first page it closes setup.
-        var prev = Step.values().getOrNull(step.ordinal - 1) ?: return false.also { finish() }
+        // Back steps back through setup; on the first page it asks before skipping the rest.
+        var prev = Step.values().getOrNull(step.ordinal - 1) ?: run { askSkip(); return true }
         if (prev == Step.HOME && isDefaultHome()) prev = Step.PROFILE
         if (prev == Step.PROFILE && !Profiles.needsFirstProfile) prev = Step.WELCOME
+        if (prev == Step.MUSIC && (NowPlaying.hasAccess(act) || !NowPlaying.available(act))) prev = Step.VOICE
         if (prev == Step.VOICE && micGranted()) prev = Step.WEATHER
         show(prev)
         return true
@@ -80,9 +85,14 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
         if (step == Step.HOME) show(Step.WEATHER)
     }
 
+    /** Back from Android's settings: moves on once notification access is allowed. */
+    fun onResumed() {
+        if (step == Step.MUSIC && NowPlaying.hasAccess(act)) show(Step.SCREENSAVER)
+    }
+
     override fun onReturn() {
         // Back from the sign-in screen: move on once signed in.
-        if (step == Step.STREMIO && Stremio.signedIn(act)) show(Step.DONE)
+        if (step == Step.STREMIO && Watch.signedIn(act)) show(Step.DONE)
     }
 
     private fun finish() {
@@ -155,9 +165,17 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
                 "Say a title, an app or a setting. Scene listens only while the mic button is on.",
                 listOf(
                     Choice("Allow microphone", "Android asks once", R.drawable.ic_mic) {
-                        act.withMicPermission { show(Step.SCREENSAVER) }
+                        act.withMicPermission { show(afterVoice()) }
                     },
-                    Choice("Not now", "Type to search instead", R.drawable.ic_close) { show(Step.SCREENSAVER) },
+                    Choice("Not now", "Type to search instead", R.drawable.ic_close) { show(afterVoice()) },
+                ),
+            )
+            Step.MUSIC -> page(
+                OnboardArt.Kind.MUSIC, "Music on Home",
+                "Scene can show the song playing in Spotify or another app, with lyrics and a music screensaver. Android needs you to allow notification access once.",
+                listOf(
+                    Choice("Allow notification access", "Opens Android's settings", R.drawable.ic_music_note) { act.openNotificationAccess() },
+                    Choice("Not now", "Allow it later in Settings, Now Playing", R.drawable.ic_close) { show(Step.SCREENSAVER) },
                 ),
             )
             Step.SCREENSAVER -> page(
@@ -173,7 +191,7 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
                 OnboardArt.Kind.STREMIO, "Stremio on Home",
                 "Sign in to see Continue watching with one-press resume, or keep Home minimal with just your apps.",
                 listOf(
-                    if (Stremio.signedIn(act)) Choice("Show Continue watching", "Signed in", R.drawable.ic_check) { useSpotlight(true) }
+                    if (Watch.signedIn(act)) Choice("Show Continue watching", "Signed in", R.drawable.ic_check) { useSpotlight(true) }
                     else Choice("Sign in with your phone", "Scan a code, no typing", R.drawable.ic_qr_code_2) {
                         useSpotlight(true, advance = false)
                         act.openSignIn()
@@ -203,6 +221,15 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
             act.home.rebuild()
         }
         if (advance) show(Step.DONE)
+    }
+
+    /** A stray Back on the first page should not skip setup, so it asks first. */
+    private fun askSkip() {
+        act.push(Dialog(act, R.drawable.ic_rocket_launch, "Skip setup?",
+            "Scene starts with its usual settings. Everything here can be changed later in Settings.", listOf(
+                Dialog.Button("Keep going", focus = true),
+                Dialog.Button("Skip setup", primary = true) { finish() },
+            )))
     }
 
     private class Choice(val label: String, val sub: String, val icon: Int, val run: () -> Unit)

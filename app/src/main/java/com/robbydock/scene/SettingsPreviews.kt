@@ -849,50 +849,85 @@ class SetupArt(ctx: Context) : View(ctx) {
     }
 }
 
+
 /**
- * Hearts in a loose halo around the support QR code. Each one drifts and breathes slowly, out of
- * step with the others. With motion off they stay still.
+ * Settings preview for App Categories: one bucket per ready-made row with the apps it holds,
+ * wrapped as Home shows them. Rows that are off stay in place, greyed.
  */
-class HeartHalo(ctx: Context) : View(ctx) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val heart = ctx.icon(R.drawable.ic_favorite, Theme.accent)
-    private val heartDuo = ctx.icon(R.drawable.ic_favorite, Theme.duo(Theme.accent))
-    private val start = android.os.SystemClock.uptimeMillis()
+class CategoryPreview(private val act: HomeActivity) : View(act) {
+    private class Bucket(val kind: AppCategory.Kind, val on: Boolean, val icons: List<Bitmap?>, val count: Int)
 
-    /** x and y from the centre and size, as parts of the QR card size; then tilt in degrees. */
-    private val spots = arrayOf(
-        floatArrayOf(-0.80f, -0.40f, 0.15f, -14f), floatArrayOf(-0.96f, 0.06f, 0.09f, 8f),
-        floatArrayOf(-0.76f, 0.42f, 0.18f, -6f), floatArrayOf(-0.58f, 0.66f, 0.08f, 12f),
-        floatArrayOf(-0.56f, -0.66f, 0.08f, 10f), floatArrayOf(0.82f, -0.36f, 0.17f, 12f),
-        floatArrayOf(0.98f, 0.10f, 0.08f, -10f), floatArrayOf(0.74f, 0.46f, 0.13f, 6f),
-        floatArrayOf(0.56f, -0.64f, 0.08f, -8f), floatArrayOf(0.54f, 0.70f, 0.07f, -12f),
-    )
+    private var buckets = load()
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bmp = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val name = textPaint(24f, Theme.TEXT, Theme.SEMIBOLD)
+    private val note = textPaint(18f, Theme.TEXT_DIM, Theme.MEDIUM)
+    private val box = RectF()
+    private val clip = Path()
 
-    /** Size of the QR card in pixels; set by the pane. */
-    var card = 0f
+    private fun load(): List<Bucket> = AppCategory.KINDS.map { k ->
+        val row = act.cfg.rows.firstOrNull { it.auto == k.key }
+        val pkgs = act.rowApps(row ?: AppRow(k.name, 2, auto = k.key))
+        Bucket(k, row != null, pkgs.take(6).map { act.app(it)?.icon }, pkgs.size)
+    }
+
+    /** Reads the rows again after a switch changes. */
+    fun update() { buckets = load(); invalidate() }
 
     override fun onDraw(c: Canvas) {
-        val cx = width / 2f; val cy = height / 2f
-        val s = if (card > 0f) card else minOf(width, height) * 0.7f
-        val t = if (Theme.motion == 2) 0f else (android.os.SystemClock.uptimeMillis() - start) / 1000f
-        // A soft accent glow behind the card.
-        p.shader = RadialGradient(cx, cy, s * 0.95f, Theme.withAlpha(Theme.accent, 0.16f), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, s * 0.95f, p)
-        p.shader = null
-        for ((i, h) in spots.withIndex()) {
-            val phase = i * 1.7f
-            val bob = kotlin.math.sin(t * 0.55f + phase) * s * 0.02f
-            val breathe = 0.5f + 0.5f * kotlin.math.sin(t * 0.4f + phase * 1.3f)
-            val d = if (i % 3 == 1) heartDuo else heart
-            val size = s * h[2]
-            val x = cx + h[0] * s; val y = cy + h[1] * s + bob
-            d.alpha = (255 * (0.10f + 0.16f * breathe + h[2] * 0.4f)).toInt().coerceAtMost(255)
-            c.save()
-            c.rotate(h[3] + kotlin.math.sin(t * 0.3f + phase) * 4f, x, y)
-            d.setBounds((x - size / 2).toInt(), (y - size / 2).toInt(), (x + size / 2).toInt(), (y + size / 2).toInt())
-            d.draw(c)
-            c.restore()
+        val w = width.toFloat(); val h = height.toFloat()
+        val r = Theme.px(Theme.R_CARD)
+        fill.color = Theme.surface
+        box.set(0f, 0f, w, h)
+        c.drawRoundRect(box, r, r, fill)
+        val pad = Theme.px(22f)
+        val gap = Theme.px(16f)
+        val cw = (w - pad * 2 - gap) / 2
+        val ch = (h - pad * 2 - gap) / 2
+        for ((i, b) in buckets.withIndex()) {
+            val x0 = pad + (i % 2) * (cw + gap)
+            val y0 = pad + (i / 2) * (ch + gap)
+            val a = if (b.on) 255 else 90
+            fill.color = Theme.withAlpha(Theme.elev, a / 255f)
+            box.set(x0, y0, x0 + cw, y0 + ch)
+            c.drawRoundRect(box, Theme.px(20f), Theme.px(20f), fill)
+            // Header: icon, name, and how many apps or that it is off.
+            val inner = Theme.px(16f)
+            val disc = Theme.px(34f)
+            val hy = y0 + inner + disc / 2
+            fill.color = Theme.withAlpha(Theme.accent, 0.16f * a / 255f)
+            c.drawCircle(x0 + inner + disc / 2, hy, disc / 2, fill)
+            val g = context.frameIcon(b.kind.icon, Theme.withAlpha(Theme.accent, a / 255f))
+            val gs = Theme.px(20f)
+            g.setBounds((x0 + inner + disc / 2 - gs / 2).toInt(), (hy - gs / 2).toInt(), (x0 + inner + disc / 2 + gs / 2).toInt(), (hy + gs / 2).toInt())
+            g.draw(c)
+            name.alpha = a
+            c.drawText(b.kind.name, x0 + inner + disc + Theme.px(12f), baseline(name, hy), name)
+            val tag = if (b.on) "${b.count}" else "Off"
+            c.drawText(tag, x0 + cw - inner - note.measureText(tag), baseline(note, hy), note)
+            // Up to six apps on one line.
+            val top = y0 + inner + disc + Theme.px(14f)
+            val ig = Theme.px(10f)
+            val s = minOf((cw - inner * 2 - ig * 5) / 6, y0 + ch - inner - top)
+            if (s <= 0f) continue
+            val ir = s * 0.24f
+            for (k in 0 until 6) {
+                val ix = x0 + inner + k * (s + ig)
+                val iy = top
+                box.set(ix, iy, ix + s, iy + s)
+                val icon = b.icons.getOrNull(k)
+                if (icon != null) {
+                    c.save()
+                    clip.reset(); clip.addRoundRect(box, ir, ir, Path.Direction.CW)
+                    c.clipPath(clip)
+                    bmp.alpha = a
+                    c.drawBitmap(icon, null, box, bmp)
+                    c.restore()
+                } else {
+                    fill.color = Theme.withAlpha(Theme.float, (if (k < b.count) 1f else 0.45f) * a / 255f)
+                    c.drawRoundRect(box, ir, ir, fill)
+                }
+            }
         }
-        if (Theme.motion != 2) postInvalidateOnAnimation()
     }
 }

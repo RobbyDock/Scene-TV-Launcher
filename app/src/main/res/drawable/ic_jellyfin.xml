@@ -1,0 +1,25 @@
+<!--
+  Jellyfin mark: a rounded triangle with a purple to blue gradient and a smaller dark
+  triangle inside.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path android:pathData="M24,5 C27,5 44,36 42,39 C40,42 8,42 6,39 C4,36 21,5 24,5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="6" android:startY="5"
+                android:endX="42" android:endY="42"
+                android:type="linear">
+                <item android:offset="0" android:color="#AA5CC3" />
+                <item android:offset="1" android:color="#00A4DC" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#8C17111B"
+        android:pathData="M24,19 C25.5,19 33,33 32,34.5 C31,36 17,36 16,34.5 C15,33 22.5,19 24,19 Z" />
+</vector>

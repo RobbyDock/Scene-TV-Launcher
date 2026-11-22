@@ -50,27 +50,27 @@ fun Context.label(text: String, size: Float, color: Int, face: android.graphics.
         setLineSpacing(Theme.px(size * 0.35f), 1f)
     }
 
-/** Raised surface card: soft shadow, a faint lift at the top and a light top edge. */
+/** Flat surface card: one fill with rounded corners, no edge or shadow. */
 fun drawCard(c: android.graphics.Canvas, p: android.graphics.Paint, w: Int, h: Int, base: Int) {
     val r = Theme.px(Theme.R_CARD)
-    p.shader = android.graphics.LinearGradient(0f, 0f, 0f, h.toFloat(), intArrayOf(Theme.mix(base, android.graphics.Color.WHITE, 0.03f), base, base),
-        floatArrayOf(0f, 0.46f, 1f), android.graphics.Shader.TileMode.CLAMP)
-    p.setShadowLayer(Theme.px(28f), 0f, Theme.px(12f), 0x38000000)
+    p.color = base
     c.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), r, r, p)
-    p.clearShadowLayer()
-    p.shader = null
-    // Faint light along the top edge.
-    c.save()
-    c.clipRect(0f, 0f, w.toFloat(), r)
-    p.style = android.graphics.Paint.Style.STROKE
-    p.strokeWidth = Theme.px(1.5f)
-    p.color = 0x0DFFFFFF
-    c.drawRoundRect(0f, Theme.px(0.75f), w.toFloat(), h.toFloat(), r, r, p)
-    p.style = android.graphics.Paint.Style.FILL
-    c.restore()
 }
 
 fun Context.icon(res: Int, color: Int): Drawable = getDrawable(res)!!.mutate().apply { setTint(color) }
+
+/**
+ * For icons drawn inside onDraw: one shared, tinted drawable per icon, which the caller bounds and
+ * draws at once and never keeps. Saves inflating and rasterizing a new drawable every frame.
+ */
+fun Context.frameIcon(res: Int, color: Int): Drawable = FrameIcons.get(this, res).apply { setTint(color) }
+
+object FrameIcons {
+    private val cache = android.util.SparseArray<Drawable>()
+    fun get(ctx: Context, res: Int): Drawable = cache[res] ?: ctx.getDrawable(res)!!.mutate().also { cache.put(res, it) }
+    /** Dropped when the activity starts again, so no drawable outlives its resources. */
+    fun clear() = cache.clear()
+}
 
 /** Page and dialog badge: an accent glyph in a tonal circle. Pops in when attached. */
 class IconBadge(ctx: Context, iconRes: Int) : View(ctx) {
@@ -527,42 +527,24 @@ class ImdbSpan : android.text.style.ReplacementSpan() {
 // ---------------------------------------------------------------- top bar
 
 class SearchPill(ctx: Context) : FocusView(ctx) {
-    private val ic = ctx.icon(R.drawable.ic_search, Theme.TEXT_DIM)
-    private val tp = textPaint(if (Theme.CINEMA) 28f else 30f, Theme.TEXT_DIM)
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ic = ctx.icon(R.drawable.ic_search_bold, Theme.TEXT_DIM)
+    private val tp = textPaint(30f, Theme.TEXT_DIM)
     override val focusScale = 1.03f
-    override val hotZ get() = if (Theme.CINEMA) 16f else 0f
-    override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
 
-    /** Width that fits the icon and text, in design units. Cinema only. */
-    fun fitWidth() = 24f + 40f + 16f + 64f + tp.measureText(TEXT) / Theme.u
-
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!Theme.CINEMA) Glass.register(this) }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
+        Glass.draw(c, this, box, h / 2)
         val s = Theme.ipx(40f)
-        val x: Int
-        if (Theme.CINEMA) {
-            // A light veil at rest that lifts to a solid pill on focus.
-            fill.color = if (hot()) Theme.float else Theme.withAlpha(Theme.TEXT, 0.08f)
-            c.drawRoundRect(box, h / 2, h / 2, fill)
-            x = Theme.ipx(24f)
-            val fg = if (hot()) Theme.TEXT else Theme.TEXT_DIM
-            ic.setTint(fg); tp.color = fg
-        } else {
-            Glass.draw(c, this, box, h / 2)
-            x = Theme.ipx(32f)
-        }
+        val x = Theme.ipx(32f)
         ic.setBounds(x, ((h - s) / 2).toInt(), x + s, ((h + s) / 2).toInt())
         ic.draw(c)
-        c.drawText(TEXT, x + s + Theme.px(if (Theme.CINEMA) 16f else 20f), baseline(tp, h / 2), tp)
+        c.drawText("Search films, shows and apps", x + s + Theme.px(20f), baseline(tp, h / 2), tp)
         drawRing(c, h / 2)
     }
-
-    private companion object { const val TEXT = "Search shows, films, apps and more" }
 }
 
 /** Stacked usage bar with a legend underneath, for storage and memory. */
@@ -689,6 +671,9 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
         set(v) { field = v; invalidate() }
     /** No glass at rest; a solid circle only while focused. Set before the view is attached. */
     var bare = false
+    /** A small accent dot at the top right, for something new behind the button. */
+    var badge = false
+        set(v) { field = v; invalidate() }
     override val restZ get() = if (filled) 6f else 0f
     override val hotZ get() = if (filled) 24f else if (bare) 16f else 0f
     override fun shadowTint() = if (filled) Theme.accent else 0
@@ -715,12 +700,20 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
         val s = (w * 0.5f).toInt()
         ic.setBounds(((w - s) / 2).toInt(), ((height - s) / 2f).toInt(), ((w + s) / 2).toInt(), ((height + s) / 2f).toInt())
         ic.draw(c)
+        if (badge) {
+            val d = w * 0.2f
+            fill.color = Theme.bg
+            c.drawCircle(w - d * 0.95f, d * 0.95f, d / 2 + Theme.px(3f), fill)
+            fill.color = Theme.accent
+            c.drawCircle(w - d * 0.95f, d * 0.95f, d / 2, fill)
+        }
         drawRing(c, w / 2)
     }
 }
 
-/** Weather and clock merged into one glass pill. Ticks once a minute while visible. */
-class InfoPill(ctx: Context) : View(ctx) {
+/** Weather and clock merged into one glass pill. Ticks once a minute while visible. OK opens the forecast. */
+class InfoPill(ctx: Context) : FocusView(ctx) {
+    override val focusScale = 1.03f
     var weather: WeatherNow? = null
         set(v) { field = v; requestLayout(); invalidate() }
     var fahrenheit = false
@@ -730,6 +723,9 @@ class InfoPill(ctx: Context) : View(ctx) {
     var showWeather = true
     /** 0 condition and high/low, 1 high/low only, 2 temperature only. */
     var detail = 0
+    /** Now Playing sits in the pill's place while a song plays. The pill keeps its size, unseen. */
+    var covered = false
+        set(v) { if (field != v) { field = v; showOrHide() } }
     var placeholder = "Set location in Settings"
 
     /** Copies the clock and weather options from [cfg]. */
@@ -740,8 +736,16 @@ class InfoPill(ctx: Context) : View(ctx) {
         showDate = cfg.showDate
         showWeather = cfg.weatherOn
         detail = cfg.weatherDetail
-        visibility = if (showClock || showWeather) VISIBLE else GONE
+        showOrHide()
         weather = w
+    }
+
+    private fun showOrHide() {
+        visibility = when {
+            !showClock && !showWeather -> GONE
+            covered -> INVISIBLE
+            else -> VISIBLE
+        }
     }
 
     private fun detailLine(w: WeatherNow): String {
@@ -754,15 +758,28 @@ class InfoPill(ctx: Context) : View(ctx) {
         }
     }
 
-    private val cinema = Theme.CINEMA
-    private val big = if (cinema) textPaint(28f, Theme.TEXT_DIM, Theme.MEDIUM) else textPaint(34f, Theme.TEXT, Theme.SEMIBOLD)
+    private val big = textPaint(34f, Theme.TEXT, Theme.SEMIBOLD)
     private val small = textPaint(24f, Theme.TEXT_DIM)
-    private val time = (if (cinema) textPaint(44f, Theme.TEXT, Theme.LIGHT).apply { letterSpacing = 0.01f } else textPaint(38f, Theme.TEXT, Theme.BOLD)).apply { fontFeatureSettings = "tnum" }
-    private val date = if (cinema) textPaint(16f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply { letterSpacing = 0.14f } else textPaint(21f, Theme.TEXT_DIM).apply { letterSpacing = 0.02f }
+    private val time = textPaint(38f, Theme.TEXT, Theme.BOLD).apply { fontFeatureSettings = "tnum" }
+    private val date = textPaint(21f, Theme.TEXT_DIM).apply { letterSpacing = 0.02f }
     private val div = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val box = RectF()
-    private val tick = Runnable { invalidate(); schedule() }
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!cinema) Glass.register(this) }
+    private var wasShown = true
+    private val tick = Runnable {
+        // Weather that went stale while offline leaves the pill on the minute it does.
+        if (wasShown != weatherShown()) requestLayout()
+        invalidate(); schedule()
+    }
+
+    /** Weather older than [STALE_MS] is not shown as now; the clock stays. */
+    private fun weatherShown(): Boolean {
+        val w = weather
+        val stale = w != null && System.currentTimeMillis() - w.at > STALE_MS
+        return (showWeather && (!stale || !showClock)).also { wasShown = it }
+    }
+
+    private companion object { const val STALE_MS = 3 * 3_600_000L }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
     private fun schedule() {
@@ -782,40 +799,43 @@ class InfoPill(ctx: Context) : View(ctx) {
             2 -> true
             else -> android.text.format.DateFormat.is24HourFormat(context)
         }
+        // Measure and draw both ask for the time, often during animations, so the formats are kept.
+        val loc = java.util.Locale.getDefault()
+        if (is24 != fmt24 || loc != fmtLocale) {
+            fmt24 = is24; fmtLocale = loc
+            timeFmt = java.text.SimpleDateFormat(if (is24) "HH:mm" else "h:mm", loc)
+            dateFmt = java.text.SimpleDateFormat("EEE d MMM", loc)
+        }
+        // Follows a time zone change, as a new format would.
+        val tz = java.util.TimeZone.getDefault()
+        timeFmt!!.timeZone = tz; dateFmt!!.timeZone = tz
         val now = java.util.Date()
-        val t = java.text.SimpleDateFormat(if (is24) "HH:mm" else "h:mm", java.util.Locale.getDefault()).format(now)
-        val d = java.text.SimpleDateFormat("EEE d MMM", java.util.Locale.getDefault()).format(now)
-        return t to d
+        return timeFmt!!.format(now) to dateFmt!!.format(now)
     }
-
-    private fun dateText(d: String) = if (cinema) d.uppercase(java.util.Locale.getDefault()) else d
-
-    // Cinema shows the temperature without the condition line.
-    private fun lineFor(w: WeatherNow) = if (cinema) "" else detailLine(w)
-    private val iconSize get() = if (cinema) 34f else 40f
-    private val iconGap get() = if (cinema) 10f else 14f
-    private val divGap get() = if (cinema) 26f else 28f
+    private var fmt24: Boolean? = null
+    private var fmtLocale: java.util.Locale? = null
+    private var timeFmt: java.text.SimpleDateFormat? = null
+    private var dateFmt: java.text.SimpleDateFormat? = null
 
     private fun weatherWidth(): Float {
         val w = weather ?: return small.measureText(placeholder)
-        val line = lineFor(w)
-        return Theme.px(iconSize + iconGap) + big.measureText(Weather.format(w.temp, fahrenheit)) +
+        val line = detailLine(w)
+        return Theme.px(40f + 14f) + big.measureText(Weather.format(w.temp, fahrenheit)) +
             (if (line.isEmpty()) 0f else Theme.px(14f) + small.measureText(line))
     }
 
     private fun clockWidth(): Float {
         val (t, d) = timeText()
         val tw = time.measureText(if (t.length < 5) "00:00" else t)
-        return if (showDate) maxOf(tw, date.measureText(dateText(d))) else tw
+        return if (showDate) maxOf(tw, date.measureText(d)) else tw
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        // Cinema has no pill, so the text runs to the edges.
-        val padL = Theme.px(if (cinema) 0f else 32f)
-        val padR = Theme.px(if (cinema) 8f else 32f)
-        var total = padL + padR + if (showClock && !cinema) Theme.px(8f) else 0f
-        if (showWeather) total += weatherWidth()
-        if (showWeather && showClock) total += Theme.px(divGap * 2)
+        val pad = Theme.px(32f)
+        // Extra room after the clock.
+        var total = pad * 2 + if (showClock) Theme.px(8f) else 0f
+        if (weatherShown()) total += weatherWidth()
+        if (weatherShown() && showClock) total += Theme.px(56f)
         if (showClock) total += clockWidth()
         setMeasuredDimension(total.toInt(), MeasureSpec.getSize(heightMeasureSpec))
     }
@@ -823,22 +843,21 @@ class InfoPill(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
-        // Cinema text sits bare on the art; Home's vignette keeps it readable.
-        if (!cinema) Glass.draw(c, this, box, h / 2)
-        var x = Theme.px(if (cinema) 0f else 32f)
+        Glass.draw(c, this, box, h / 2)
+        var x = Theme.px(32f)
         val w = weather
-        if (showWeather) {
+        if (weatherShown()) {
             if (w != null) {
                 val (_, res) = Weather.describe(w.code, w.day)
-                val s = Theme.ipx(iconSize)
-                val ic = context.icon(res, Theme.STAR)
+                val s = Theme.ipx(40f)
+                val ic = context.frameIcon(res, Weather.tint(w.code, w.day))
                 ic.setBounds(x.toInt(), ((h - s) / 2).toInt(), x.toInt() + s, ((h + s) / 2).toInt())
                 ic.draw(c)
-                x += s + Theme.px(iconGap)
+                x += s + Theme.px(14f)
                 val temp = Weather.format(w.temp, fahrenheit)
                 c.drawText(temp, x, baseline(big, h / 2), big)
                 x += big.measureText(temp)
-                val line = lineFor(w)
+                val line = detailLine(w)
                 if (line.isNotEmpty()) {
                     x += Theme.px(14f)
                     c.drawText(line, x, baseline(small, h / 2), small)
@@ -849,23 +868,13 @@ class InfoPill(ctx: Context) : View(ctx) {
                 x += small.measureText(placeholder)
             }
         }
-        if (showWeather && showClock) {
-            x += Theme.px(divGap)
-            div.color = Theme.withAlpha(Theme.TEXT, if (cinema) 0.14f else 0.16f)
-            if (cinema) c.drawRect(x, h / 2 - Theme.px(20f), x + Theme.px(1.5f), h / 2 + Theme.px(20f), div)
-            else c.drawRect(x, h * 0.25f, x + Theme.px(2f), h * 0.75f, div)
-            x += Theme.px(divGap)
+        if (weatherShown() && showClock) {
+            x += Theme.px(28f)
+            div.color = Theme.withAlpha(Theme.TEXT, 0.16f)
+            c.drawRect(x, h * 0.25f, x + Theme.px(2f), h * 0.75f, div)
+            x += Theme.px(28f)
         }
-        if (showClock && cinema) {
-            // Time and date share a right edge.
-            val (t, d) = timeText()
-            val right = width - Theme.px(8f)
-            if (showDate) {
-                val du = dateText(d)
-                c.drawText(t, right - time.measureText(t), h / 2 + Theme.px(4f), time)
-                c.drawText(du, right - date.measureText(du), h / 2 + Theme.px(28f), date)
-            } else c.drawText(t, right - time.measureText(t), baseline(time, h / 2), time)
-        } else if (showClock) {
+        if (showClock) {
             val (t, d) = timeText()
             if (showDate) {
                 c.drawText(t, x, h / 2 + Theme.px(1f), time)
@@ -874,6 +883,7 @@ class InfoPill(ctx: Context) : View(ctx) {
                 c.drawText(t, x, baseline(time, h / 2), time)
             }
         }
+        drawRing(c, h / 2)
     }
 }
 
@@ -947,7 +957,7 @@ class SmallPill(ctx: Context, var text: String, var iconRes: Int) : FocusView(ct
         if (hot() || !quiet) c.drawRoundRect(box, h / 2, h / 2, fill)
         val s = Theme.ipx(30f)
         val x = Theme.ipx(22f)
-        val ic = context.icon(iconRes, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
+        val ic = context.frameIcon(iconRes, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
         ic.setBounds(x, ((h - s) / 2).toInt(), x + s, ((h + s) / 2).toInt())
         ic.draw(c)
         tp.color = if (hot()) Theme.TEXT else Theme.TEXT_DIM
@@ -1053,9 +1063,9 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
     override val focusScale get() = if (cinema) 1.04f else Theme.FOCUS_SCALE
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, radius)
 
-    /** Home's Cinema focus: lift and a foot bar instead of a ring. Other screens keep the ring. */
+    /** Home's Cinema focus: the card lifts as well as showing the ring. */
     var cinema = false
-        set(v) { field = v; ringless = v; invalidate() }
+        set(v) { field = v; invalidate() }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
@@ -1107,7 +1117,7 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             fill.color = Theme.float
             c.drawRect(box, fill)
             val s = Theme.ipx(64f)
-            val ic = context.icon(iconRes, Theme.accent)
+            val ic = context.frameIcon(iconRes, Theme.accent)
             ic.setBounds(((w - s) / 2).toInt(), (h * 0.32f - s / 2).toInt(), ((w + s) / 2).toInt(), (h * 0.32f + s / 2).toInt())
             ic.draw(c)
         }
@@ -1137,7 +1147,6 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             c.drawRect(0f, h - bh, w * progress, h, fill)
             fill.shader = null
         }
-        if (cinema && hot()) { fill.color = Theme.TEXT; c.drawRect(0f, h - Theme.px(6f), w, h, fill) }
         c.restore()
         drawRing(c, r)
     }
@@ -1149,6 +1158,17 @@ class PosterCard(ctx: Context) : FocusView(ctx) {
         set(v) { field = v; invalidate() }
     var title = ""
     var year = ""
+    /** Watched tick in the top corner. */
+    var watched = false
+        set(v) { field = v; invalidate() }
+    /** Part watched, 0 to 1. Shown as a bar along the bottom when above zero. */
+    var progress = 0f
+        set(v) { field = v; invalidate() }
+    /** Icon drawn large in the middle instead of art, for a See all card. */
+    var icon: Drawable? = null
+        set(v) { field = v; invalidate() }
+    private val mark = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val tick = Path()
     private val bmp = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrim = Paint()
@@ -1176,7 +1196,17 @@ class PosterCard(ctx: Context) : FocusView(ctx) {
         c.save()
         c.clipPath(clip)
         val a = art
+        val ic = icon
         when {
+            ic != null -> {
+                fill.color = Theme.elev
+                c.drawRect(box, fill)
+                val s = (w * 0.34f).toInt()
+                val l = ((w - s) / 2).toInt(); val t = (h * 0.30f).toInt()
+                ic.setBounds(l, t, l + s, t + s)
+                ic.setTint(Theme.accent)
+                ic.draw(c)
+            }
             a != null -> c.drawBitmap(a, null, box, bmp)
             loading -> { Shimmer.draw(c, box, 0f); postInvalidateOnAnimation() }
             else -> {
@@ -1197,7 +1227,32 @@ class PosterCard(ctx: Context) : FocusView(ctx) {
         lay.draw(c)
         c.restore()
         c.drawText(year, pad, h - pad, ty)
+        if (progress > 0f && !watched) {
+            val bh = Theme.px(6f)
+            mark.color = Theme.withAlpha(Color.WHITE, 0.25f)
+            c.drawRect(0f, h - bh, w, h, mark)
+            mark.color = Theme.accent
+            c.drawRect(0f, h - bh, w * progress.coerceIn(0f, 1f), h, mark)
+        }
         c.restore()
+        if (watched) {
+            val r = Theme.px(20f)
+            val cx = w - Theme.px(14f) - r; val cy = Theme.px(14f) + r
+            mark.style = Paint.Style.FILL
+            mark.color = Theme.accent
+            c.drawCircle(cx, cy, r, mark)
+            tick.reset()
+            tick.moveTo(cx - r * 0.42f, cy + r * 0.02f)
+            tick.lineTo(cx - r * 0.1f, cy + r * 0.34f)
+            tick.lineTo(cx + r * 0.46f, cy - r * 0.3f)
+            mark.style = Paint.Style.STROKE
+            mark.strokeWidth = Theme.px(4.5f)
+            mark.strokeCap = Paint.Cap.ROUND
+            mark.strokeJoin = Paint.Join.ROUND
+            mark.color = Theme.onAccent
+            c.drawPath(tick, mark)
+            mark.style = Paint.Style.FILL
+        }
         drawRing(c, Theme.px(Theme.R_CHIP))
     }
 }
@@ -1211,6 +1266,8 @@ class AppTile(ctx: Context) : FocusView(ctx) {
         set(v) { field = v; invalidate() }
     var glyph = 0
     var label = ""
+    /** See all: up to four of the apps it holds, drawn small in place of one icon. */
+    var stack: List<Bitmap?>? = null
     var dashed = false
     var dim = false
     /** Shows a lock badge in the icon's corner. */
@@ -1232,9 +1289,9 @@ class AppTile(ctx: Context) : FocusView(ctx) {
     override val restZ get() = if (dashed) 0f else 10f
     override val hotZ get() = if (dashed) 0f else 30f
 
-    /** Home's Cinema focus: a bar in the icon foot instead of a ring. Other screens keep the ring. */
+    /** Home's Cinema look: rounder icons. Focus shows the ring, as everywhere else. */
     var cinema = false
-        set(v) { field = v; ringless = v; invalidate() }
+        set(v) { field = v; invalidate() }
 
     // Cinema rounds the icon a little less: 36 on a 168 tile.
     private val roundness = if (Theme.CINEMA) 36f / 168f else 0.24f
@@ -1270,6 +1327,7 @@ class AppTile(ctx: Context) : FocusView(ctx) {
             val i = icon
             bmp.alpha = if (dim) 110 else 255
             if (i != null) c.drawBitmap(i, null, ib, bmp)
+            stack?.let { drawStack(c, it, w) }
             c.restore()
             if (locked) {
                 // Dark disc with a lock in the icon's bottom right corner.
@@ -1283,7 +1341,7 @@ class AppTile(ctx: Context) : FocusView(ctx) {
             }
         }
         if (icon == null && glyph != 0) {
-            val g = context.icon(glyph, if (dashed) Theme.TEXT_DIM else Theme.accent)
+            val g = context.frameIcon(glyph, if (dashed) Theme.TEXT_DIM else Theme.accent)
             val gs = w * 0.36f
             g.setBounds((ib.centerX() - gs / 2).toInt(), (ib.centerY() - gs / 2).toInt(), (ib.centerX() + gs / 2).toInt(), (ib.centerY() + gs / 2).toInt())
             g.draw(c)
@@ -1296,12 +1354,32 @@ class AppTile(ctx: Context) : FocusView(ctx) {
         val t = tp.fit(label, w + Theme.px(24f))
         c.drawText(t, (w - tp.measureText(t)) / 2, w + Theme.px(24f) - tp.ascent(), tp)
         if (lifted) drawLifted(c, w, r)
-        else if (cinema && hot() && !dashed) {
-            // A short bar inside the foot of the icon marks focus.
-            fill.color = Theme.TEXT
-            val bh = Theme.px(5f)
-            c.drawRoundRect(w * 0.3f, w - Theme.px(10f) - bh, w * 0.7f, w - Theme.px(10f), bh / 2, bh / 2, fill)
-        } else drawRing(c, r, ib)
+        else drawRing(c, r, ib)
+    }
+
+    private val cell = RectF()
+
+    private fun drawStack(c: Canvas, apps: List<Bitmap?>, w: Float) {
+        val pad = w * 0.15f
+        val gap = w * 0.07f
+        val s = (w - pad * 2 - gap) / 2
+        val r = s * 0.24f
+        for (k in 0 until 4) {
+            val x = pad + (k % 2) * (s + gap)
+            val y = pad + (k / 2) * (s + gap)
+            cell.set(x, y, x + s, y + s)
+            val b = apps.getOrNull(k)
+            if (b == null) {
+                fill.color = Theme.float
+                c.drawRoundRect(cell, r, r, fill)
+            } else {
+                c.save()
+                arrow.reset(); arrow.addRoundRect(cell, r, r, Path.Direction.CW)
+                c.clipPath(arrow)
+                c.drawBitmap(b, null, cell, bmp)
+                c.restore()
+            }
+        }
     }
 
     private fun drawLifted(c: Canvas, w: Float, r: Float) {
@@ -1359,7 +1437,7 @@ class ResultPill(ctx: Context, var title: String, var subtitle: String, var icon
             c.drawBitmap(b, null, ib, bmp)
             c.restore()
         } else if (iconRes != 0) {
-            val g = context.icon(iconRes, Theme.accent)
+            val g = context.frameIcon(iconRes, Theme.accent)
             val gs = Theme.px(40f)
             g.setBounds((ib.centerX() - gs / 2).toInt(), (ib.centerY() - gs / 2).toInt(), (ib.centerX() + gs / 2).toInt(), (ib.centerY() + gs / 2).toInt())
             g.draw(c)
@@ -1394,6 +1472,12 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
     /** Profile whose picture replaces the icon. */
     var avatar: Profile? = null
         set(v) { field = v; invalidate() }
+    /** Colours the icon in place of the accent, such as the weather's own colour. */
+    var iconTint = 0
+    /** A small label at the end of the row, such as Recommended. [pillAccent] tints it; otherwise it is outlined. */
+    var pill = ""
+    var pillAccent = false
+    private val tagP = textPaint(17f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply { letterSpacing = 0.04f }
     private val avatarText = textPaint(30f, Color.WHITE, Theme.BOLD)
     /** Draws the row at half strength, focused or not, for an action that isn't available. */
     var dimmed = false
@@ -1483,19 +1567,20 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         } else {
             // The icon lights up on focus and while its pane is open.
             val lit = (hot || marked) && !brandIcon
+            val ink = if (iconTint != 0) iconTint else Theme.accent
             if (lit) {
                 // The icon lights up like the Play button.
                 val top = h / 2 - cs / 2
                 fill.color = Color.WHITE
-                fill.shader = LinearGradient(cx - cs / 2, top, cx + cs / 2, top + cs, Theme.accent, Theme.duo(Theme.accent), Shader.TileMode.CLAMP)
-                fill.setShadowLayer(Theme.px(15f), 0f, Theme.px(6f), Theme.withAlpha(Theme.accent, 0.4f))
-            } else fill.color = if (brandIcon) Theme.elev else Theme.withAlpha(Theme.accent, 0.16f)
+                fill.shader = LinearGradient(cx - cs / 2, top, cx + cs / 2, top + cs, ink, Theme.duo(ink), Shader.TileMode.CLAMP)
+                fill.setShadowLayer(Theme.px(15f), 0f, Theme.px(6f), Theme.withAlpha(ink, 0.4f))
+            } else fill.color = if (brandIcon) Theme.elev else Theme.withAlpha(ink, 0.16f)
             c.drawCircle(cx, h / 2, cs / 2, fill)
             fill.shader = null
             fill.clearShadowLayer()
             // Brand marks keep their own colours.
             val g = glyph ?: (if (brandIcon) context.getDrawable(iconRes)!! else context.icon(iconRes, Theme.accent)).also { glyph = it }
-            if (!brandIcon) g.setTint(if (lit) Theme.onAccent else Theme.accent)
+            if (!brandIcon) g.setTint(if (lit) (if (iconTint != 0) Theme.bg else Theme.onAccent) else ink)
             val gs = Theme.px(if (brandIcon) 38f else 34f)
             g.setBounds((cx - gs / 2).toInt(), (h / 2 - gs / 2).toInt(), (cx + gs / 2).toInt(), (h / 2 + gs / 2).toInt())
             g.draw(c)
@@ -1524,9 +1609,9 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             Trail.CHEVRON, Trail.OPEN, Trail.HEART -> {
                 val gsz = Theme.px(40f)
                 val chev = when (trail) {
-                    Trail.OPEN -> context.icon(R.drawable.ic_open_in_new, Theme.TEXT_DIM)
-                    Trail.HEART -> context.icon(R.drawable.ic_favorite, Theme.accent)
-                    else -> context.icon(R.drawable.ic_chevron_right, Theme.TEXT_DIM)
+                    Trail.OPEN -> context.frameIcon(R.drawable.ic_open_in_new, Theme.TEXT_DIM)
+                    Trail.HEART -> context.frameIcon(R.drawable.ic_favorite, Theme.accent)
+                    else -> context.frameIcon(R.drawable.ic_chevron_right, Theme.TEXT_DIM)
                 }
                 chev.setBounds((right - gsz).toInt(), (h / 2 - gsz / 2).toInt(), right.toInt(), (h / 2 + gsz / 2).toInt())
                 chev.draw(c)
@@ -1539,14 +1624,14 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             }
             Trail.STEPPER -> {
                 val gsz = Theme.px(36f)
-                val rch = context.icon(R.drawable.ic_keyboard_arrow_right, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
+                val rch = context.frameIcon(R.drawable.ic_keyboard_arrow_right, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
                 rch.setBounds((right - gsz).toInt(), (h / 2 - gsz / 2).toInt(), right.toInt(), (h / 2 + gsz / 2).toInt())
                 rch.draw(c)
                 right -= gsz + Theme.px(8f)
                 val vw = tv.measureText(value)
                 c.drawText(value, right - vw, baseline(tv, h / 2), tv)
                 right -= vw + Theme.px(8f)
-                val lch = context.icon(R.drawable.ic_keyboard_arrow_left, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
+                val lch = context.frameIcon(R.drawable.ic_keyboard_arrow_left, if (hot()) Theme.TEXT else Theme.TEXT_DIM)
                 lch.setBounds((right - gsz).toInt(), (h / 2 - gsz / 2).toInt(), right.toInt(), (h / 2 + gsz / 2).toInt())
                 lch.draw(c)
                 right -= gsz + Theme.px(16f)
@@ -1575,7 +1660,7 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             Trail.CHECK -> {
                 val gsz = Theme.px(40f)
                 if (checked) {
-                    val g = context.icon(R.drawable.ic_check, Theme.accent)
+                    val g = context.frameIcon(R.drawable.ic_check, Theme.accent)
                     g.setBounds((right - gsz).toInt(), (h / 2 - gsz / 2).toInt(), right.toInt(), (h / 2 + gsz / 2).toInt())
                     g.draw(c)
                 }
@@ -1593,14 +1678,35 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             c.drawCircle(right - Theme.px(20f), h / 2, Theme.px(20f), fill)
             right -= Theme.px(56f)
         }
+        val tagW = if (pill.isEmpty()) 0f else tagP.measureText(pill) + Theme.px(22f) + Theme.px(14f)
         val avail = right - tx
-        if (subtitle.isEmpty()) {
-            c.drawText(t1.fit(title, avail), tx, baseline(t1, h / 2), t1)
-        } else {
-            c.drawText(t1.fit(title, avail), tx, h / 2 - Theme.px(6f), t1)
-            c.drawText(t2.fit(subtitle, avail), tx, h / 2 + Theme.px(30f), t2)
-        }
+        val shown = t1.fit(title, avail - tagW)
+        val titleBase = if (subtitle.isEmpty()) baseline(t1, h / 2) else h / 2 - Theme.px(6f)
+        c.drawText(shown, tx, titleBase, t1)
+        if (subtitle.isNotEmpty()) c.drawText(t2.fit(subtitle, avail), tx, h / 2 + Theme.px(30f), t2)
+        // Tags sit at the end of the row, so tags on rows above and below line up.
+        if (pill.isNotEmpty()) drawTag(c, right - tagW + Theme.px(14f), titleBase + (t1.ascent() + t1.descent()) / 2)
         drawRing(c, r)
+    }
+
+    /** The tag's pill, centred on the title's text line. */
+    private fun drawTag(c: Canvas, x: Float, cy: Float) {
+        val tw = tagP.measureText(pill)
+        val ph = Theme.px(28f)
+        box.set(x, cy - ph / 2, x + tw + Theme.px(22f), cy + ph / 2)
+        if (pillAccent) {
+            fill.color = Theme.withAlpha(Theme.accent, 0.18f)
+            c.drawRoundRect(box, ph / 2, ph / 2, fill)
+            tagP.color = Theme.accent
+        } else {
+            fill.style = Paint.Style.STROKE
+            fill.strokeWidth = Theme.px(1.5f)
+            fill.color = Theme.withAlpha(Theme.TEXT_DIM, 0.55f)
+            c.drawRoundRect(box, ph / 2, ph / 2, fill)
+            fill.style = Paint.Style.FILL
+            tagP.color = Theme.TEXT_DIM
+        }
+        c.drawText(pill, x + Theme.px(11f), baseline(tagP, cy), tagP)
     }
 
     /** The value, shortened so the title always shows in full. */
@@ -1856,7 +1962,7 @@ class LocationCard(ctx: Context) : View(ctx) {
             c.drawCircle(cx, cy, Theme.px(34f) * i, line)
         }
         val ps = Theme.ipx(56f)
-        val pin = context.icon(R.drawable.ic_location_on, Theme.accent)
+        val pin = context.frameIcon(R.drawable.ic_location_on, Theme.accent)
         pin.setBounds((cx - ps / 2).toInt(), (cy - ps).toInt() + Theme.ipx(6f), (cx + ps / 2).toInt(), cy.toInt() + Theme.ipx(6f))
         pin.draw(c)
         // Left side fades to the card colour.

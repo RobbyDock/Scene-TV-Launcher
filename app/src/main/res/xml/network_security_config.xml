@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Jellyfin and Plex servers on the home network often speak plain HTTP. Android allows it here,
+     and Net.checkAddress refuses plain HTTP to any address outside the home network. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
