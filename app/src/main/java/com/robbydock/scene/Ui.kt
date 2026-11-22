@@ -429,23 +429,36 @@ abstract class FocusView(ctx: Context, focusable: Boolean = true) : View(ctx) {
     override fun performLongClick(): Boolean { press(false); return super.performLongClick() }
 
     private var heldByTouch = false
+    private var dragged = false
+    private var downX = 0f
+    private var downY = 0f
     private val touchHold = Runnable { heldByTouch = true; performLongClick() }
 
-    /** A tap or mouse click focuses the view, then acts as OK. Holding acts as a long press. */
+    /** A tap or mouse click focuses the view and acts as OK. Holding acts as a long press. A drag does neither. */
     override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
         if (!isFocusable || !isEnabled) return super.onTouchEvent(e)
         when (e.actionMasked) {
             android.view.MotionEvent.ACTION_DOWN -> {
                 heldByTouch = false
+                dragged = false
+                downX = e.rawX; downY = e.rawY
                 press(true)
                 postDelayed(touchHold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+                if (!dragged && kotlin.math.hypot(e.rawX - downX, e.rawY - downY) > slop) {
+                    dragged = true
+                    removeCallbacks(touchHold)
+                    press(false)
+                }
             }
             android.view.MotionEvent.ACTION_UP -> {
                 removeCallbacks(touchHold)
                 press(false)
-                // The first tap focuses, a tap on the focused view acts as OK.
-                if (!heldByTouch) {
-                    if (!isFocused) requestFocus() else performClick()
+                if (!heldByTouch && !dragged) {
+                    if (!isFocused) requestFocus()
+                    performClick()
                 }
             }
             android.view.MotionEvent.ACTION_CANCEL -> { removeCallbacks(touchHold); press(false) }
@@ -522,7 +535,7 @@ class SearchPill(ctx: Context) : FocusView(ctx) {
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
 
     /** Width that fits the icon and text, in design units. Cinema only. */
-    fun fitWidth() = 24f + 40f + 16f + 36f + tp.measureText(TEXT) / Theme.u
+    fun fitWidth() = 24f + 40f + 16f + 64f + tp.measureText(TEXT) / Theme.u
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!Theme.CINEMA) Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
@@ -749,13 +762,6 @@ class InfoPill(ctx: Context) : View(ctx) {
     private val div = Paint(Paint.ANTI_ALIAS_FLAG)
     private val box = RectF()
     private val tick = Runnable { invalidate(); schedule() }
-    /** Soft dark halo behind the bare Cinema text, so it reads on bright art. */
-    private val halo = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    init {
-        if (cinema) for (p in listOf(big, small, time, date)) p.setShadowLayer(Theme.px(6f), 0f, Theme.px(1f), Theme.withAlpha(Color.BLACK, 0.4f))
-    }
-
     override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!cinema) Glass.register(this) }
     override fun onDetachedFromWindow() { Glass.unregister(this); super.onDetachedFromWindow() }
 
@@ -817,12 +823,8 @@ class InfoPill(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
-        if (cinema) {
-            // Drawn past the view's edges; the parent does not clip.
-            val cx = width / 2f; val rx = width / 2f + Theme.px(80f); val ry = h / 2 + Theme.px(52f)
-            halo.shader = RadialGradient(0f, 0f, 1f, intArrayOf(0x4D0A060C, 0x240A060C, 0), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
-            c.save(); c.translate(cx, h / 2); c.scale(rx, ry); c.drawCircle(0f, 0f, 1f, halo); c.restore()
-        } else Glass.draw(c, this, box, h / 2)
+        // Cinema text sits bare on the art; Home's vignette keeps it readable.
+        if (!cinema) Glass.draw(c, this, box, h / 2)
         var x = Theme.px(if (cinema) 0f else 32f)
         val w = weather
         if (showWeather) {
@@ -936,6 +938,8 @@ class SmallPill(ctx: Context, var text: String, var iconRes: Int) : FocusView(ct
         setMeasuredDimension(w.toInt(), MeasureSpec.getSize(heightMeasureSpec))
     }
 
+    override fun getBaseline() = baseline(tp, height / 2f).toInt()
+
     override fun onDraw(c: Canvas) {
         val h = height.toFloat()
         box.set(0f, 0f, width.toFloat(), h)
@@ -1045,25 +1049,23 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
     override val restZ = 10f
     override val hotZ = 34f
     private val radius get() = Theme.px(if (Theme.CINEMA) 22f else Theme.R_CARD)
-    // Cinema: focus lifts the card and draws a bar along its foot. Other cards dim and hide their labels.
+    // Cinema: focus lifts the card and draws a bar along its foot. Other cards hide their labels.
     override val focusScale get() = if (cinema) 1.04f else Theme.FOCUS_SCALE
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, radius)
 
     /** Home's Cinema focus: lift and a foot bar instead of a ring. Other screens keep the ring. */
     var cinema = false
-        set(v) { field = v; ringless = v; alpha = if (v && !isFocused) DIM else 1f; invalidate() }
+        set(v) { field = v; ringless = v; invalidate() }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         if (!cinema) return
-        val a = if (gainFocus) 1f else DIM
         val y = if (gainFocus && Theme.moves) -Theme.px(8f) else 0f
-        if (Theme.MEDIUM_MS == 0L || FocusView.quiet) { alpha = a; translationY = y }
-        else animate().alpha(a).translationY(y).setDuration(if (gainFocus) Theme.FOCUS_MS * 3 else Theme.FOCUS_MS)
+        if (Theme.MEDIUM_MS == 0L || FocusView.quiet) translationY = y
+        else animate().translationY(y).setDuration(if (gainFocus) Theme.FOCUS_MS * 3 else Theme.FOCUS_MS)
             .setInterpolator(if (gainFocus && Theme.moves) Motion.SPRING else Theme.EASE).start()
     }
 
-    private companion object { const val DIM = 0.65f }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         scrim.shader = LinearGradient(
@@ -1109,10 +1111,10 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             ic.setBounds(((w - s) / 2).toInt(), (h * 0.32f - s / 2).toInt(), ((w + s) / 2).toInt(), (h * 0.32f + s / 2).toInt())
             ic.draw(c)
         }
-        c.drawRect(box, scrim)
         val pad = Theme.px(24f)
-        // Cinema names only the focused card, or a card with no art.
+        // Cinema names only the focused card, or a card with no art. Unnamed art stays clear.
         if (!cinema || hot() || a == null) {
+            c.drawRect(box, scrim)
             c.drawText(tTitle.fit(title, w - pad * 2), pad, h - Theme.px(if (subtitle.isEmpty()) 30f else 58f), tTitle)
             if (subtitle.isNotEmpty()) c.drawText(tSub.fit(subtitle, w - pad * 2), pad, h - Theme.px(28f), tSub)
         }
@@ -1211,6 +1213,10 @@ class AppTile(ctx: Context) : FocusView(ctx) {
     var label = ""
     var dashed = false
     var dim = false
+    /** Shows a lock badge in the icon's corner. */
+    var locked = false
+        set(v) { field = v; invalidate() }
+    private val lockIcon by lazy { context.icon(R.drawable.ic_lock, android.graphics.Color.WHITE) }
     /** Picked up in move mode: accent ring and arrows show where it can go. */
     var lifted = false
         set(v) { field = v; invalidate() }
@@ -1265,6 +1271,16 @@ class AppTile(ctx: Context) : FocusView(ctx) {
             bmp.alpha = if (dim) 110 else 255
             if (i != null) c.drawBitmap(i, null, ib, bmp)
             c.restore()
+            if (locked) {
+                // Dark disc with a lock in the icon's bottom right corner.
+                val d = w * 40f / 168f
+                val cx = w - w * 10f / 168f - d / 2
+                fill.color = 0x8C000000.toInt()
+                c.drawCircle(cx, cx, d / 2, fill)
+                val s = (d * 0.6f).toInt()
+                lockIcon.setBounds((cx - s / 2).toInt(), (cx - s / 2).toInt(), (cx - s / 2).toInt() + s, (cx - s / 2).toInt() + s)
+                lockIcon.draw(c)
+            }
         }
         if (icon == null && glyph != 0) {
             val g = context.icon(glyph, if (dashed) Theme.TEXT_DIM else Theme.accent)
@@ -1429,6 +1445,8 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         val hot = hot()
         t1.typeface = if (hot) Theme.SEMIBOLD else Theme.MEDIUM
         tv.color = if (hot) Theme.TEXT else Theme.TEXT_DIM
+        // Shaders take the paint's alpha, so start each draw opaque.
+        fill.color = Color.WHITE
         if (hot) {
             // Accent light on the leading edge, fading into the raised fill.
             box.set(0f, 0f, w, h)
@@ -1468,6 +1486,7 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
             if (lit) {
                 // The icon lights up like the Play button.
                 val top = h / 2 - cs / 2
+                fill.color = Color.WHITE
                 fill.shader = LinearGradient(cx - cs / 2, top, cx + cs / 2, top + cs, Theme.accent, Theme.duo(Theme.accent), Shader.TileMode.CLAMP)
                 fill.setShadowLayer(Theme.px(15f), 0f, Theme.px(6f), Theme.withAlpha(Theme.accent, 0.4f))
             } else fill.color = if (brandIcon) Theme.elev else Theme.withAlpha(Theme.accent, 0.16f)
@@ -1513,8 +1532,9 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
                 chev.draw(c)
                 right -= gsz + Theme.px(12f)
                 if (value.isNotEmpty()) {
-                    c.drawText(value, right - tv.measureText(value), baseline(tv, h / 2), tv)
-                    right -= tv.measureText(value) + Theme.px(16f)
+                    val v = fitValue(right, tx)
+                    c.drawText(v, right - tv.measureText(v), baseline(tv, h / 2), tv)
+                    right -= tv.measureText(v) + Theme.px(16f)
                 }
             }
             Trail.STEPPER -> {
@@ -1562,8 +1582,9 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
                 right -= gsz + Theme.px(12f)
             }
             Trail.VALUE -> if (value.isNotEmpty()) {
-                c.drawText(value, right - tv.measureText(value), baseline(tv, h / 2), tv)
-                right -= tv.measureText(value) + Theme.px(16f)
+                val v = fitValue(right, tx)
+                c.drawText(v, right - tv.measureText(v), baseline(tv, h / 2), tv)
+                right -= tv.measureText(v) + Theme.px(16f)
             }
             Trail.NONE -> {}
         }
@@ -1581,6 +1602,10 @@ class SettingRow(ctx: Context, val iconRes: Int, var title: String) : FocusView(
         }
         drawRing(c, r)
     }
+
+    /** The value, shortened so the title always shows in full. */
+    private fun fitValue(right: Float, tx: Float): String =
+        tv.fit(value, (right - tx - t1.measureText(title) - Theme.px(16f)).coerceAtLeast(0f))
 }
 
 /** Accent capsule: six tonal bands, a check when chosen. */

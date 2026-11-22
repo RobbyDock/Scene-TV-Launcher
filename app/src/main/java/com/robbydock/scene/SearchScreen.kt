@@ -32,7 +32,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
         const val BATCH = 20
         /** Field and results share the screen's side margins. Rows scroll under soft edges. */
         const val RES_X = 96f
-        const val RES_W = 1728f
+        val RES_W get() = Theme.W - RES_X * 2
         /** How far the field and first row move up while the keyboard shows. */
         const val KEYBOARD_LIFT = 36f
         /** Result rows starting at or below this, in the results area, sit under the keyboard. */
@@ -103,7 +103,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
         voicePanel.place(wave, 28f, 16f, 130f, 56f)
         voicePanel.place(voiceLabel, 188f, 24f, RES_W - 460f, 40f)
         voicePanel.visibility = GONE
-        place(results, 0f, 220f, 1920f, 860f)
+        place(results, 0f, 220f, Theme.W, 860f)
         // Rows added while the keyboard shows are hidden too.
         results.setOnHierarchyChangeListener(object : OnHierarchyChangeListener {
             override fun onChildViewAdded(parent: View?, child: View?) { post { hideCovered() } }
@@ -235,7 +235,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
             setPadding(Theme.ipx(RES_X), Theme.ipx(padV), Theme.ipx(RES_X), Theme.ipx(padV + 16f))
         }
         scroller.addView(row)
-        results.place(scroller, 0f, y - padV, 1920f, itemH + padV * 2 + 16f)
+        results.place(scroller, 0f, y - padV, Theme.W, itemH + padV * 2 + 16f)
         for ((i, v) in items.withIndex()) {
             if (i == 0 && tagFirst) v.tag = "first"
             row.addView(v, LinearLayout.LayoutParams(widthOf(v), Theme.ipx(itemH)).apply { if (i < items.size - 1) rightMargin = Theme.ipx(gap) })

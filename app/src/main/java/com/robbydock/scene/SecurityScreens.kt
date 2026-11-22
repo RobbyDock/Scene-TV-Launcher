@@ -26,21 +26,21 @@ class RecoveryCodeScreen(act: HomeActivity, code: String, intro: String, private
     private var closed = false
 
     init {
-        place(act.label("Your recovery code", 60f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 64f, 1920f, 80f)
-        place(act.label(intro, 26f, Theme.TEXT_DIM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 150f, 1920f, 36f)
-        place(QrView(act, Recovery.display(code)), (1920f - 420f) / 2, 220f, 420f, 420f)
+        place(act.label("Your recovery code", 60f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 64f, Theme.W, 80f)
+        place(act.label(intro, 26f, Theme.TEXT_DIM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 150f, Theme.W, 36f)
+        place(QrView(act, Recovery.display(code)), (Theme.W - 420f) / 2, 220f, 420f, 420f)
         place(act.label(Recovery.display(code), 80f, Theme.TEXT, Theme.BOLD).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             letterSpacing = 0.12f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-        }, 0f, 670f, 1920f, 110f)
+        }, 0f, 670f, Theme.W, 110f)
         place(act.label("Take a photo or write this down. It's shown only once, and it unlocks this profile if the passcode is forgotten.", 24f, Theme.TEXT_DIM).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-        }, 0f, 800f, 1920f, 34f)
+        }, 0f, 800f, Theme.W, 34f)
         val ok = PillButton(act, "I've saved it", R.drawable.ic_check, true).apply { setOnClickListener { finish() } }
         val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
         row.addView(ok, LinearLayout.LayoutParams(-2, Theme.ipx(84f)))
-        place(row, 0f, 880f, 1920f, 84f)
+        place(row, 0f, 880f, Theme.W, 84f)
         post { ok.requestFocus() }
     }
 

@@ -211,8 +211,12 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
      * One split page: step count, title, text and a card of choices on the left, a picture of
      * the focused choice on the right, progress along the foot.
      */
+    /** Offsets that keep the 16:9 page centred on wider or taller screens. */
+    private val OX get() = (Theme.W - 1920f) / 2
+    private val OY get() = (Theme.H - 1080f) / 2
+
     private fun page(kind: OnboardArt.Kind, title: String, body: String, choices: List<Choice>) {
-        place(Glow(act), 0f, 0f, 1920f, 1080f)
+        place(Glow(act), 0f, 0f, Theme.W, Theme.H)
         val col = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
@@ -220,7 +224,7 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
             clipToPadding = false
             setPadding(0, 0, 0, Theme.ipx(30f))
         }
-        place(col, 140f, 0f, 760f, 1080f)
+        place(col, OX + 140f, 0f, 760f, Theme.H)
         if (step != Step.DONE) {
             col.addView(act.label("Step ${step.ordinal + 1} of ${Step.values().size - 1}", 24f, Theme.accent, Theme.SEMIBOLD),
                 LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = Theme.ipx(18f) })
@@ -247,7 +251,7 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
             fahrenheit = act.cfg.fahrenheit
             spotlight = act.cfg.spotlight
         }
-        place(art, 980f, 120f, 800f, 820f)
+        place(art, OX + 980f, OY + 120f, 800f, 820f)
         art.show(kind)
 
         var first: View? = null
@@ -263,7 +267,7 @@ class SetupScreen(act: HomeActivity) : OverlayBase(act, 1f), BackAware, HomeActi
             card.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(104f)))
             if (first == null) first = r
         }
-        if (step != Step.DONE) place(Progress(step.ordinal, Step.values().size - 1), 140f, 968f, 800f, 30f)
+        if (step != Step.DONE) place(Progress(step.ordinal, Step.values().size - 1), OX + 140f, OY + 968f, 800f, 30f)
 
         // Words rise in one after another.
         if (Theme.MEDIUM_MS > 0) {

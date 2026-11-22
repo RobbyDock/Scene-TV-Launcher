@@ -31,6 +31,30 @@ open class OverlayBase(protected val act: HomeActivity, private val dim: Float =
         isClickable = true
     }
 
+    /** A tap outside the panel closes it, as Back does. For side panels and dialogs. */
+    protected open val tapAway = false
+    private var downOutside = false
+
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        if (!tapAway || !isEnabled) return super.onTouchEvent(e)
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> downOutside = outside(e.x, e.y)
+            android.view.MotionEvent.ACTION_UP -> if (downOutside && outside(e.x, e.y)) { downOutside = false; act.handleBack() }
+            android.view.MotionEvent.ACTION_CANCEL -> downOutside = false
+        }
+        return true
+    }
+
+    /** True when ([x], [y]) misses every panel. Children that fill the screen do not count. */
+    private fun outside(x: Float, y: Float): Boolean {
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility != VISIBLE || (c.width >= width * 0.98f && c.height >= height * 0.98f)) continue
+            if (x >= c.left + c.translationX && x < c.right + c.translationX && y >= c.top + c.translationY && y < c.bottom + c.translationY) return false
+        }
+        return true
+    }
+
     /** Blurred copy of the screen underneath, drawn scaled up behind the dim. */
     var backdrop: Bitmap? = null
         set(v) { field = v; invalidate() }
@@ -115,6 +139,7 @@ class Dialog(
     /** Shows this profile's picture in place of [icon]. */
     profile: Profile? = null,
 ) : OverlayBase(act, 0.6f, haze = true) {
+    override val tapAway = true
     /** [focus] marks the button focused first. */
     class Button(val label: String, val primary: Boolean = false, val focus: Boolean = false, val run: () -> Unit = {})
 
@@ -172,6 +197,7 @@ class Sheet(
     /** Title sheets lead with the title's poster. An empty string shows a film icon until art arrives. */
     posterUrl: String? = null,
 ) : OverlayBase(act, 0.5f, haze = true) {
+    override val tapAway = true
     /** [profile] shows that profile's picture in place of [icon]. */
     class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val run: () -> Unit)
 
@@ -182,7 +208,7 @@ class Sheet(
         val listH = minOf(790f - footerSpace, actions.size * 108f + 34f)
         val panelH = (200f + listH + footerSpace + 16f).coerceAtMost(1000f)
         val panel = Panel(act, Theme.R_SHEET, { Theme.surface })
-        place(panel, 1920f - w - 40f, (1080f - panelH) / 2, w, panelH)
+        place(panel, Theme.W - w - 40f, (Theme.H - panelH) / 2, w, panelH)
         var tx = 48f
         if (iconBitmap != null) {
             val tile = AppTile(act).apply { icon = iconBitmap; isFocusable = false; isClickable = false }
@@ -235,11 +261,18 @@ class Sheet(
 // ---------------------------------------------------------------- app picker
 
 @SuppressLint("ViewConstructor")
-class AppPicker(act: HomeActivity) : OverlayBase(act, 0.72f, haze = true) {
+/** Full-screen app grid. Pins the chosen app, or hands it to [pick] when given. */
+class AppPicker(
+    act: HomeActivity,
+    title: String = "Pin an app",
+    sub: String = "Choose an app to add to your pinned row",
+    current: String = "",
+    pick: ((AppEntry) -> Unit)? = null,
+) : OverlayBase(act, 0.72f, haze = true) {
     init {
-        place(act.label("Pin an app", 64f, Theme.TEXT, Theme.BOLD), 96f, 72f, 1200f, 80f)
-        place(act.label("Choose an app to add to your pinned row", 26f, Theme.TEXT_DIM), 96f, 160f, 1200f, 36f)
-        val list = act.apps.filter { it.pkg !in act.cfg.hidden && !act.isPinned(it.pkg) }
+        place(act.label(title, 64f, Theme.TEXT, Theme.BOLD), 96f, 72f, 1200f, 80f)
+        place(act.label(sub, 26f, Theme.TEXT_DIM), 96f, 160f, 1200f, 36f)
+        val list = act.apps.filter { it.pkg !in act.cfg.hidden && (pick != null || !act.isPinned(it.pkg)) }
         val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
         val grid = FrameLayout(act).apply { clipChildren = false }
         val cols = 8
@@ -247,16 +280,16 @@ class AppPicker(act: HomeActivity) : OverlayBase(act, 0.72f, haze = true) {
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
-        place(act.clipBox(scroll), 0f, 230f, 1920f, 850f)
+        place(act.clipBox(scroll), 0f, 230f, Theme.W, 850f)
         var first: View? = null
         for ((i, e) in list.withIndex()) {
             val tile = AppTile(act).apply {
                 label = e.label
                 icon = e.icon
-                setOnClickListener { act.pop(); act.pin(e.pkg, e.label) }
+                setOnClickListener { act.pop(); if (pick != null) pick(e) else act.pin(e.pkg, e.label) }
             }
             grid.place(tile, 96f + (i % cols) * pitchX, 24f + (i / cols) * pitchY, HomeScreen.TILE, HomeScreen.TILE_H)
-            if (first == null) first = tile
+            if (first == null || e.pkg == current) first = tile
         }
         if (list.isEmpty()) place(act.label("Every app is already pinned or hidden.", 30f, Theme.TEXT_DIM), 96f, 260f, 1200f, 40f)
         post { first?.requestFocus() }
@@ -317,7 +350,7 @@ class RemapPicker(
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
-        place(act.clipBox(scroll), 0f, 420f, 1920f, 660f)
+        place(act.clipBox(scroll), 0f, 420f, Theme.W, 660f)
         for ((i, e) in list.withIndex()) {
             val tile = AppTile(act).apply {
                 label = e.label

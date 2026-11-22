@@ -92,9 +92,14 @@ class HomeActivity : Activity() {
 
     /** Set when the screen turns off. The profile picker shows on wake. */
     private var askProfileOnResume = false
+    /** Set when the screen turns off. The start app opens on wake. */
+    private var openOnWake = false
+    private var screenOnAt = 0L
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_ON) { screenOnAt = SystemClock.elapsedRealtime(); return }
             if (Profiles.askOnWake && Profiles.list.size > 1) askProfileOnResume = true
+            else if (cfg.startWake && cfg.startApp.isNotEmpty()) openOnWake = true
         }
     }
 
@@ -114,7 +119,21 @@ class HomeActivity : Activity() {
         if (Profiles.current.color != cfg.accent) { Profiles.current.color = cfg.accent; Profiles.save(this) }
         Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
         Theme.motion = cfg.motion
-        root = FrameLayout(this).apply {
+        // Draws beside a phone's camera cutout too, so the layout fills the screen it measured.
+        if (Build.VERSION.SDK_INT >= 28) window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        root = object : FrameLayout(this) {
+            // Some phones keep part of the screen, such as a camera cutout. Lays out again once
+            // for the size the window really has.
+            override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                super.onSizeChanged(w, h, ow, oh)
+                if (Theme.measured == null && Theme.sizeDiffers(w, h)) {
+                    Theme.measured = android.graphics.Rect(0, 0, w, h)
+                    post { recreate() }
+                }
+            }
+        }.apply {
             setBackgroundColor(Theme.bg)
             clipChildren = false
         }
@@ -124,6 +143,7 @@ class HomeActivity : Activity() {
         root.viewTreeObserver.addOnGlobalFocusChangeListener { old, new -> if (old != null && new != null) Sounds.move() }
         home = HomeScreen(this)
         root.addView(home, FrameLayout.LayoutParams(-1, -1))
+        NowPlaying.start(this)
         watchNetwork()
         setContinue(Stremio.cachedContinue(this, online))
         weather = Weather.cached(this)
@@ -134,7 +154,8 @@ class HomeActivity : Activity() {
         else if (isVoiceIntent(intent)) openSearch(true)
         else if (intent?.action == Remap.ACTION) remoteAction(intent)
         else if (Profiles.askOnWake && Profiles.list.size > 1) push(ProfilePicker(this))
-        registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        else openOnBoot()
+        registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) })
         if (savedInstanceState == null && cfg.splash && Theme.motion != 2) showSplash()
         Profiles.recovered?.let { msg -> home.postDelayed({ toast(msg) }, 1500) }
 
@@ -158,9 +179,18 @@ class HomeActivity : Activity() {
         Net.main.postDelayed(syncTick, 20_000L)
         refreshWeather(force = false)
         ClockDream.select(this)
+        // Picks up notification access granted while Scene was away.
+        NowPlaying.start(this)
         // Recent apps may have changed while another app was open.
         if (cfg.showRecent) home.appsChanged()
         (overlays.lastOrNull()?.first as? QuickPanel)?.onReturn()
+        // Shows permissions granted in Android's settings at once.
+        (overlays.lastOrNull()?.first as? SettingsScreen)?.onResumed()
+        if (openOnWake) {
+            openOnWake = false
+            // Only when Home is what the TV wakes to, not when it is opened later.
+            if (SystemClock.elapsedRealtime() - screenOnAt < 5_000L && overlays.isEmpty() && Apps.isInstalled(packageManager, cfg.startApp)) launch(cfg.startApp)
+        }
         if (askProfileOnResume) {
             askProfileOnResume = false
             if (statePrefs().getBoolean("setupDone", false) && overlays.none { it.first is ProfilePicker || it.first is SetupScreen }) {
@@ -243,7 +273,8 @@ class HomeActivity : Activity() {
     /** Intents sent by the remote's mic. */
     private fun isVoiceIntent(i: Intent?) = i?.action in setOf(Intent.ACTION_ASSIST, Intent.ACTION_SEARCH_LONG_PRESS, Intent.ACTION_VOICE_COMMAND, "android.speech.action.WEB_SEARCH")
 
-    private fun handleBack() {
+    /** Back: closes the top overlay, or steps Home back. Also used by a tap outside a panel. */
+    fun handleBack() {
         val top = overlays.lastOrNull()?.first
         if (top != null) {
             if (top is BackAware && top.onBack()) return
@@ -278,7 +309,7 @@ class HomeActivity : Activity() {
     private fun showSplash() {
         val splash = FrameLayout(this).apply { setBackgroundColor(Theme.bg) }
         val pulse = StartPulse(this)
-        splash.place(pulse, (1920f - 360f) / 2, (1080f - 360f) / 2, 360f, 360f)
+        splash.place(pulse, (Theme.W - 360f) / 2, (Theme.H - 360f) / 2, 360f, 360f)
         root.addView(splash, FrameLayout.LayoutParams(-1, -1))
         home.alpha = 0f
         if (Theme.moves) { home.scaleX = 1.03f; home.scaleY = 1.03f }
@@ -804,7 +835,14 @@ class HomeActivity : Activity() {
         }
     }
 
+    /** Opens [pkg], asking for the passcode first when it is locked now. */
     fun launch(pkg: String) {
+        if (!AppLocks.needsCode(cfg, pkg)) { launchNow(pkg); return }
+        val owner = AppLocks.owner() ?: run { launchNow(pkg); return }
+        push(PasscodeScreen(this, owner, PasscodeScreen.Mode.CHECK) { pop(); AppLocks.unlocked(pkg); launchNow(pkg) })
+    }
+
+    private fun launchNow(pkg: String) {
         if (Demo.isSample(pkg)) { toast("Sample app"); return }
         val i = Apps.launchIntent(packageManager, pkg)
         if (i == null) { if (pkg == Config.STREMIO) installStremio() else toast("Not installed"); return }
@@ -1022,7 +1060,7 @@ class HomeActivity : Activity() {
     }
 
     /** Long-press menu for an app tile. [fromGrid] is true for All apps tiles. */
-    fun appMenu(pkg: String, label: String, fromGrid: Boolean = false, fromRecent: Boolean = false) {
+    fun appMenu(pkg: String, label: String, fromGrid: Boolean = false, fromRecent: Boolean = false, row: Int = -1) {
         val info = Apps.info(packageManager, pkg)
         val a = ArrayList<Sheet.Action>()
         a.add(Sheet.Action("Open", R.drawable.ic_open_in_new, "Start $label") { launch(pkg) })
@@ -1040,13 +1078,14 @@ class HomeActivity : Activity() {
             a.add(Sheet.Action("Sort All apps", R.drawable.ic_sort_by_alpha, arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { sortMenu() })
         }
         if (isPinned(pkg)) {
-            if (!fromGrid && !fromRecent && cfg.pinned.size > 1) {
+            if (!fromGrid && !fromRecent && row < 0 && cfg.pinned.size > 1) {
                 a.add(Sheet.Action("Move", R.drawable.ic_drag_indicator, "Pick it up, move with the arrows, press OK to drop") { home.startMove(false, pkg) })
             }
             a.add(Sheet.Action("Unpin", R.drawable.ic_close, "Remove from Pinned apps. It stays in All apps.") { unpin(pkg) })
         } else {
             a.add(Sheet.Action("Pin to home", R.drawable.ic_push_pin, "Add to the end of Pinned apps") { pin(pkg, label) })
         }
+        a.addAll(appControlActions(pkg, label, row))
         if (fromRecent) a.add(Sheet.Action("Remove from recents", R.drawable.ic_history, "It shows again after you next open it") {
             cfg.recents.remove(pkg); cfg.recentsRemoved[pkg] = System.currentTimeMillis(); save(); home.rebuild()
         })
@@ -1069,6 +1108,20 @@ class HomeActivity : Activity() {
             if (info?.system == true) add("System")
         }.joinToString("  ·  ")
         push(Sheet(this, label, sub, app(pkg)?.icon, a))
+    }
+
+    /** Options for what is playing: open the player, control it, or show the music screensaver. */
+    fun nowPlayingMenu() {
+        val s = NowPlaying.song ?: return
+        val playing = NowPlaying.state == 1
+        val a = listOf(
+            Sheet.Action("Open ${s.app}", R.drawable.ic_open_in_new, "Back to the player") { NowPlaying.open(this) },
+            Sheet.Action(if (playing) "Pause" else "Play", if (playing) R.drawable.ic_pause else R.drawable.ic_play_arrow) { NowPlaying.playPause() },
+            Sheet.Action("Previous", R.drawable.ic_skip_previous) { NowPlaying.previous() },
+            Sheet.Action("Next", R.drawable.ic_skip_next) { NowPlaying.next() },
+            Sheet.Action("Music Screensaver", R.drawable.ic_lyrics, "Album art, lyrics and a visualizer") { push(MusicSaverScreen(this)) },
+        )
+        push(Sheet(this, s.title, listOf(s.artist, s.app).filter { it.isNotEmpty() }.joinToString("  ·  "), s.art, a))
     }
 
     /** Long-press menu for a Continue watching card. */

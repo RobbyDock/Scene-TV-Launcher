@@ -39,20 +39,38 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         const val HINT_W = 400f
         /** Where the pinned row starts when the spotlight is shown. */
         const val PINNED_Y_WITH_SPOT = 1150f
-        const val GRID_COLS = 8
-        val TOP_KEYS = setOf("search", "mic", "gear", "avatar")
+        /** All apps columns: 8 on a 16:9 screen, more on wider ones. */
+        val GRID_COLS get() = maxOf(8, ((Theme.W - EDGE * 2 + TILE_GAP) / (TILE + TILE_GAP)).toInt())
+        val TOP_KEYS = setOf("search", "mic", "gear", "avatar", "np")
     }
 
     private val ambience = Ambience(act)
     private val backdrop = Backdrop(act)
     private val topScrim = TopScrim(act)
-    private val content = FrameLayout(act).apply { clipChildren = false; clipToPadding = false }
+    /**
+     * Home's rows. As tall as its lowest row, so taps still reach the rows that start below the
+     * screen once Home scrolls them up.
+     */
+    private val content = object : FrameLayout(act) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            super.onMeasure(widthSpec, heightSpec)
+            var bottom = MeasureSpec.getSize(heightSpec)
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                val lp = c.layoutParams as? MarginLayoutParams ?: continue
+                bottom = maxOf(bottom, lp.topMargin + c.measuredHeight)
+            }
+            setMeasuredDimension(measuredWidth, bottom)
+        }
+    }.apply { clipChildren = false; clipToPadding = false }
     private val search = SearchPill(act)
     private val mic = RoundButton(act, R.drawable.ic_mic, true)
     private val info = InfoPill(act)
     private val gear = RoundButton(act, R.drawable.ic_settings, false)
     private val avatar = AvatarView(act)
     private val wifi = WifiIcon(act)
+    private val np = NowPlayingPill(act)
+    private val npChanged = { nowPlayingChanged() }
 
     // Spotlight views.
     private val spot = FrameLayout(act).apply { clipChildren = false }
@@ -98,15 +116,18 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         } else place(search, EDGE, 48f, 760f, 88f)
         place(mic, EDGE + 684f, 60f, 64f, 64f)
         place(info, 0f, 48f, -1f, 88f)
-        place(gear, 1920f - EDGE - 88f, 48f, 88f, 88f)
-        place(avatar, 1920f - EDGE - 200f, 48f, 88f, 88f)
+        place(gear, Theme.W - EDGE - 88f, 48f, 88f, 88f)
+        place(avatar, Theme.W - EDGE - 200f, 48f, 88f, 88f)
         place(wifi, 0f, 68f, 48f, 48f)
+        place(np, 0f, 48f, 0f, 88f)
+        np.visibility = GONE
         wifi.show(act.online, act.linkUp, animate = false)
-        // The icon sits left of the clock and follows it.
+        // The icon sits left of the clock and follows it, and Now Playing sits left of both.
         info.addOnLayoutChangeListener { _, l, _, _, _, _, _, _, _ ->
             val lp = wifi.layoutParams as LayoutParams
             val x = l - Theme.ipx(48f + 24f)
             if (lp.leftMargin != x) post { lp.leftMargin = x; wifi.requestLayout() }
+            post { placeNowPlaying() }
         }
         (info.layoutParams as LayoutParams).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.END
@@ -119,6 +140,12 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         gear.focusKey = "gear"
         avatar.focusKey = "avatar"
         avatar.contentDescription = "Switch profile"
+        np.focusKey = "np"
+        np.contentDescription = "Now playing"
+        np.setOnClickListener { NowPlaying.playPause() }
+        np.setOnLongClickListener { act.nowPlayingMenu(); true }
+        keyed["np"] = np
+        np.id = View.generateViewId()
         search.setOnClickListener { act.openSearch(false) }
         mic.setOnClickListener { act.openSearch(true) }
         gear.setOnClickListener { act.push(QuickPanel(act)) }
@@ -141,13 +168,44 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         gear.nextFocusRightId = gear.id
         search.nextFocusLeftId = search.id
 
-        viewTreeObserver.addOnGlobalFocusChangeListener(ViewTreeObserver.OnGlobalFocusChangeListener { _, now ->
+        viewTreeObserver.addOnGlobalFocusChangeListener(ViewTreeObserver.OnGlobalFocusChangeListener { old, now ->
             if (now == null) return@OnGlobalFocusChangeListener
             when {
-                now === search || now === mic || now === gear || now === avatar -> scrollTo(0f)
+                now === search || now === mic || now === gear || now === avatar || now === np -> scrollTo(0f)
                 else -> scrollTarget[now]?.let { scrollTo(it) }
             }
+            (now.parent as? Strip)?.let { if (it.remember) lastIn[it] = now }
+            if (!FocusView.quiet && !moving) polish(old, now)
         })
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); NowPlaying.listen(npChanged); nowPlayingChanged() }
+    override fun onDetachedFromWindow() { NowPlaying.unlisten(npChanged); super.onDetachedFromWindow() }
+
+    /** Shows Now Playing when something plays or is paused, and links it into the top bar. */
+    fun nowPlayingChanged() {
+        val show = NowPlaying.showOnHome(act) && NowPlaying.song != null && NowPlaying.state > 0
+        if (!show && np.isFocused) avatar.requestFocus()
+        np.visibility = if (show) VISIBLE else GONE
+        val left = if (Theme.CINEMA) search else mic
+        if (show) {
+            left.nextFocusRightId = np.id; np.nextFocusLeftId = left.id
+            np.nextFocusRightId = avatar.id; avatar.nextFocusLeftId = np.id
+            np.nextFocusDownId = search.nextFocusDownId
+            placeNowPlaying()
+            np.update()
+        } else {
+            left.nextFocusRightId = avatar.id; avatar.nextFocusLeftId = left.id
+        }
+    }
+
+    private fun placeNowPlaying() {
+        if (np.visibility != VISIBLE) return
+        val w = Theme.ipx(np.fitWidth())
+        val right = if (wifi.visibility == VISIBLE && wifi.alpha > 0f) (wifi.layoutParams as LayoutParams).leftMargin - Theme.ipx(16f)
+            else info.left - Theme.ipx(20f)
+        val lp = np.layoutParams as LayoutParams
+        if (lp.width != w || lp.leftMargin != right - w) { lp.width = w; lp.leftMargin = right - w; np.requestLayout() }
     }
 
     // ---------------------------------------------------------------- data events
@@ -213,7 +271,8 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             y = 780f
             buildContinue(y)
             y = PINNED_Y_WITH_SPOT
-            pinnedTarget = -(y - 560f)
+            // The rows below are a page of their own: Continue watching leaves the screen.
+            pinnedTarget = -(y - 220f)
         } else {
             art(null)
             y = if (cfg.spotlight) buildConnect(190f) + 64f else 220f
@@ -221,6 +280,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         }
         pinTiles.clear()
         val rowsTop = y
+        pageTop = pinnedTarget
         if (cfg.showPinned) y = buildPinned(y, pinnedTarget)
         if (cfg.showRecent) {
             // A second row scrolls further, so it sits where the first one would.
@@ -229,6 +289,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             y = buildRecent(y, pinnedTarget - (y - rowsTop))
         }
         if (!cfg.showPinned && !cfg.showRecent) y -= 56f
+        y = buildUserRows(y, pinnedTarget, rowsTop)
         buildGrid(y + 56f)
         if (selected >= act.continueItems.size) selected = 0
         if (hero) select(selected, immediate = true)
@@ -249,7 +310,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     /** Signed-out stand-in for the spotlight: what Stremio adds, and how to connect it. Returns its bottom edge. */
     private fun buildConnect(y: Float): Float {
         val h = 420f
-        content.place(ConnectCard(act), EDGE, y, 1920f - EDGE * 2, h)
+        content.place(ConnectCard(act), EDGE, y, Theme.W - EDGE * 2, h)
         content.place(act.label("Bring your Stremio library home", 52f, Theme.TEXT, Theme.BOLD), EDGE + 64f, y + 60f, 1100f, 70f)
         content.place(act.label("Sign in with your phone to see Continue watching, new episodes and a full-screen spotlight for what you're watching.",
             28f, Theme.TEXT_DIM, Theme.REGULAR, 2), EDGE + 64f, y + 146f, 980f, 84f)
@@ -281,7 +342,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     private fun buildSpotlight() {
         spot.removeAllViews()
-        content.place(spot, EDGE, 190f, 1920f - EDGE * 2, 580f)
+        content.place(spot, EDGE, 190f, Theme.W - EDGE * 2, 580f)
         // The title bleeds into the left margin.
         title.bleed = Theme.px(EDGE)
         if (Theme.CINEMA) {
@@ -303,7 +364,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         spot.place(loadingLines, 0f, 146f, 860f, 200f)
         spot.place(bar, 0f, 412f, 420f, 8f)
         spot.place(barLabel, 440f, 402f, 900f, 30f)
-        spot.place(buttons, 0f, 456f, 1920f - EDGE * 2, 80f)
+        spot.place(buttons, 0f, 456f, Theme.W - EDGE * 2, 80f)
         spot.place(buttonHint, 0f, 548f, HINT_W, 32f)
     }
 
@@ -352,6 +413,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private fun linkTopRow() {
         search.nextFocusDownId = primaryButton?.id ?: View.NO_ID
         mic.nextFocusDownId = search.nextFocusDownId
+        np.nextFocusDownId = search.nextFocusDownId
         gear.nextFocusDownId = search.nextFocusDownId
         avatar.nextFocusDownId = search.nextFocusDownId
     }
@@ -377,8 +439,8 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val header = rowHeader("Continue watching")
         content.place(header, EDGE, y, -1f, 44f)
         // Slightly smaller than full 16:9 width.
-        val strip = Strip(act, 352f, 28f)
-        content.place(strip, EDGE, y + 58f, 1920f - EDGE, 198f)
+        val strip = Strip(act, 352f, 28f).apply { remember = false }
+        content.place(strip, EDGE, y + 58f, Theme.W - EDGE, 198f)
         if (items.isEmpty()) {
             val card = ArtCard(act).also { it.cinema = Theme.CINEMA }.apply {
                 when {
@@ -475,9 +537,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         tile.label = entry?.label ?: act.cfg.pinned.firstOrNull { it.pkg == pkg }?.label ?: pkg
         tile.icon = entry?.icon
         tile.dim = entry == null && act.apps.isNotEmpty()
+        tile.locked = pkg in act.cfg.locked
         tile.focusKey = key
         tile.setOnClickListener { act.launch(pkg) }
-        tile.setOnLongClickListener { act.appMenu(pkg, tile.label, grid, prefix == "rec:"); true }
+        val row = prefix.removePrefix("row").removeSuffix(":").toIntOrNull() ?: -1
+        tile.setOnLongClickListener { act.appMenu(pkg, tile.label, grid, prefix == "rec:", row); true }
         keyed[key] = tile
         tile.invalidate()
     }
@@ -487,7 +551,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val header = rowHeader("Pinned apps")
         content.place(header, EDGE, y, -1f, 44f)
         val strip = Strip(act, TILE, TILE_GAP)
-        content.place(strip, EDGE, y + 72f, 1920f - EDGE, TILE_H)
+        content.place(strip, EDGE, y + 72f, Theme.W - EDGE, TILE_H)
         for ((i, pin) in cfg.pinned.withIndex()) {
             val tile = AppTile(act).also { it.cinema = Theme.CINEMA }
             bindApp(tile, pin.pkg, false)
@@ -519,7 +583,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             return y + 64f + 40f
         }
         val strip = Strip(act, TILE, TILE_GAP)
-        content.place(strip, EDGE, y + 72f, 1920f - EDGE, TILE_H)
+        content.place(strip, EDGE, y + 72f, Theme.W - EDGE, TILE_H)
         for ((i, pkg) in list.withIndex()) {
             val tile = AppTile(act).also { it.cinema = Theme.CINEMA }
             bindApp(tile, pkg, false, "rec:")
@@ -528,6 +592,61 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             scrollTarget[tile] = target
         }
         return y + 72f + TILE_H
+    }
+
+    /** The user's own rows. Each scrolls to sit where the first row would. Returns the bottom edge. */
+    private fun buildUserRows(start: Float, target: Float, rowsTop: Float): Float {
+        var y = start
+        val inputs = if (Inputs.showOnHome(act)) Inputs.list(act).filter { !it.hidden } else emptyList()
+        if (inputs.isNotEmpty()) {
+            y += 56f
+            content.place(rowHeader("Inputs"), EDGE, y, -1f, 44f)
+            val strip = Strip(act, TILE, TILE_GAP)
+            content.place(strip, EDGE, y + 72f, Theme.W - EDGE, TILE_H)
+            for (i in inputs) {
+                val tile = AppTile(act).also { it.cinema = Theme.CINEMA }.apply {
+                    label = i.name
+                    glyph = R.drawable.ic_input
+                    focusKey = "inp:${i.id}"
+                    contentDescription = "${i.name}, ${i.system}"
+                    setOnClickListener { Inputs.switchTo(act, i) }
+                    setOnLongClickListener { Inputs.menu(act, i); true }
+                }
+                strip.add(tile)
+                keyed["inp:${i.id}"] = tile
+                keyed.putIfAbsent("pin:0", tile)
+                scrollTarget[tile] = target - (y - rowsTop)
+            }
+            y += 72f + TILE_H
+        }
+        for ((ri, r) in act.cfg.rows.withIndex()) {
+            val list = act.rowApps(r)
+            y += 56f
+            val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.BOTTOM }
+            head.addView(rowHeader(r.name), LinearLayout.LayoutParams(-2, -1))
+            if (r.sort != 0) head.addView(act.label(RowSort.NAMES[r.sort], 24f, Theme.TEXT_DIM, Theme.MEDIUM).apply {
+                gravity = android.view.Gravity.BOTTOM
+                setPadding(Theme.ipx(16f), 0, 0, Theme.ipx(2f))
+            }, LinearLayout.LayoutParams(-2, -1))
+            content.place(head, EDGE, y, -1f, 44f)
+            val rowTarget = target - (y - rowsTop)
+            if (list.isEmpty()) {
+                content.place(act.label("Hold OK on an app and choose Add to Row.", 28f, Theme.TEXT_DIM), EDGE, y + 64f, 1200f, 40f)
+                y += 64f + 40f
+                continue
+            }
+            val strip = Strip(act, TILE, TILE_GAP)
+            content.place(strip, EDGE, y + 72f, Theme.W - EDGE, TILE_H)
+            for (pkg in list) {
+                val tile = AppTile(act).also { it.cinema = Theme.CINEMA }
+                bindApp(tile, pkg, false, "row$ri:")
+                strip.add(tile)
+                keyed.putIfAbsent("pin:0", tile)
+                scrollTarget[tile] = rowTarget
+            }
+            y += 72f + TILE_H
+        }
+        return y
     }
 
     private fun buildGrid(y: Float) {
@@ -542,6 +661,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             setOnClickListener { act.sortMenu() }
         }
         content.place(sort, EDGE + 176f, y - 2f, -1f, 48f)
+        // Sits on the header's text line, a short gap after it.
+        sort.post {
+            sort.translationY = (header.top + header.baseline - sort.top - sort.baseline).toFloat()
+            sort.translationX = header.right + Theme.px(28f) - Theme.px(22f) - sort.left
+        }
         keyed["sort"] = sort
         scrollTarget[sort] = -(y + 72f - 600f)
         gridTiles.clear()
@@ -623,7 +747,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         tile.requestFocus()
         // Every other tile in the row or grid wiggles.
         for (t in tiles) if (t !== tile) Motion.wiggle(t)
-        if (moveHint.parent == null) place(moveHint, (1920f - 760f) / 2, 0f, 760f, 72f)
+        if (moveHint.parent == null) place(moveHint, (Theme.W - 760f) / 2, 0f, 760f, 72f)
         moveHint.translationY = Theme.px(984f)
         moveHint.animate().alpha(1f).setDuration(Theme.FOCUS_MS).start()
         post { placeHint(tile) }
@@ -729,6 +853,23 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         return rowNeighbour(focused, direction == FOCUS_DOWN) ?: super.focusSearch(focused, direction)
     }
 
+    /** The tile focused last in each app strip, so coming back to a row lands where you left it. */
+    private val lastIn = java.util.WeakHashMap<Strip, View>()
+
+    /** Cards and tiles tip the way focus moved within their row, and catch a band of light. */
+    private fun polish(old: View?, now: View) {
+        if (!Theme.moves || (now !is AppTile && now !is ArtCard) || !isInside(content, now)) return
+        if (old != null && (old is AppTile || old is ArtCard)) {
+            val at = IntArray(2)
+            old.getLocationOnScreen(at); val ox = at[0]; val oy = at[1]
+            now.getLocationOnScreen(at)
+            val sameRow = old.parent === now.parent && (now.parent is Strip || kotlin.math.abs(at[1] - oy) < now.height / 2)
+            if (sameRow && at[0] != ox) Polish.tilt(now, at[0] > ox)
+        }
+        val square = now is AppTile
+        Polish.sheen(now, square, if (square) now.width * (if (Theme.CINEMA) 36f / 168f else 0.24f) else Theme.px(Theme.R_CARD))
+    }
+
     private fun isInside(parent: View, v: View): Boolean {
         var p = v.parent
         while (p is View) { if (p === parent) return true; p = p.parent }
@@ -752,7 +893,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val row = rows.filter { (_, b) -> if (down) b[1] - edge < tol else edge - b[3] < tol }
         val screenW = resources.displayMetrics.widthPixels
         val onScreen = row.filter { (_, b) -> b[2] > 0 && b[0] < screenW }.ifEmpty { row }
-        return onScreen.minByOrNull { (_, b) -> kotlin.math.abs((b[0] + b[2]) / 2 - fx) }?.first
+        val best = onScreen.minByOrNull { (_, b) -> kotlin.math.abs((b[0] + b[2]) / 2 - fx) }?.first
+        // App strips remember the tile focused last.
+        val strip = best?.parent as? Strip
+        if (strip != null && strip.remember) lastIn[strip]?.takeIf { it.parent === strip && it.isShown }?.let { return it }
+        return best
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -948,29 +1093,96 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     // ---------------------------------------------------------------- scrolling
 
-    private fun scrollTo(target: Float) {
+    private fun scrollTo(target: Float, ms: Long = Theme.MEDIUM_MS) {
         if (target == scroll && scrollAnim == null) return
         scrollAnim?.cancel()
         val from = scroll
         scrollAnim = ValueAnimator.ofFloat(from, target).apply {
-            duration = Theme.MEDIUM_MS
+            duration = ms
             interpolator = Theme.EASE
-            addUpdateListener {
-                scroll = it.animatedValue as Float
-                content.translationY = Theme.px(scroll)
-                val t = (-scroll / 400f).coerceIn(0f, 1f)
-                spot.alpha = 1f - (t * 1.6f).coerceAtMost(1f)
-                backdrop.alpha = 1f - t * 0.55f
-                backdrop.translationY = Theme.px(scroll * 0.35f)
-                ambience.follow(backdrop.translationY, backdrop.alpha)
-                topScrim.alpha = t
-                Glass.follow(backdrop.translationY, backdrop.alpha)
-            }
+            addUpdateListener { applyScroll(it.animatedValue as Float) }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) { scrollAnim = null }
             })
             start()
         }
+    }
+
+    /** Moves Home's rows to [v] design units and fades the spotlight as they rise. */
+    private fun applyScroll(v: Float) {
+        scroll = v
+        content.translationY = Theme.px(scroll)
+        val t = (-scroll / 400f).coerceIn(0f, 1f)
+        spot.alpha = 1f - (t * 1.6f).coerceAtMost(1f)
+        backdrop.alpha = 1f - t * 0.55f
+        backdrop.translationY = Theme.px(scroll * 0.35f)
+        ambience.follow(backdrop.translationY, backdrop.alpha)
+        topScrim.alpha = t
+        Glass.follow(backdrop.translationY, backdrop.alpha)
+    }
+
+    // ---------------------------------------------------------------- touch
+
+    private val slop = android.view.ViewConfiguration.get(act).scaledTouchSlop
+    private var touchY = 0f
+    private var touchX = 0f
+    private var dragFrom = 0f
+    private var dragging = false
+    private var tracker: android.view.VelocityTracker? = null
+    /** Where the second page starts. Home never rests between it and the top. */
+    private var pageTop = 0f
+
+    /** Farthest Home scrolls down: the last row's resting place. */
+    private fun minScroll() = scrollTarget.values.minOrNull()?.coerceAtMost(0f) ?: 0f
+
+    private fun startDrag(e: android.view.MotionEvent) {
+        dragging = true
+        scrollAnim?.cancel()
+        dragFrom = scroll
+        touchY = e.y
+        tracker?.recycle()
+        tracker = android.view.VelocityTracker.obtain().also { it.addMovement(e) }
+    }
+
+    /** An up or down swipe takes over from the tile under the finger. */
+    override fun onInterceptTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> { touchX = e.x; touchY = e.y; dragging = false }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dy = e.y - touchY
+                if (kotlin.math.abs(dy) > slop && kotlin.math.abs(dy) > kotlin.math.abs(e.x - touchX)) { startDrag(e); return true }
+            }
+        }
+        return false
+    }
+
+    /** Swipes scroll Home's rows; a quick swipe carries on a little. */
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> { touchX = e.x; touchY = e.y; dragging = false }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                if (!dragging) { if (kotlin.math.abs(e.y - touchY) > slop) startDrag(e) else return true }
+                tracker?.addMovement(e)
+                applyScroll((dragFrom + (e.y - touchY) / Theme.u).coerceIn(minScroll(), 0f))
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                if (dragging) {
+                    val t = tracker
+                    t?.addMovement(e); t?.computeCurrentVelocity(1000)
+                    val v = (t?.yVelocity ?: 0f) / Theme.u
+                    var end = (scroll + v * 0.25f).coerceIn(minScroll(), 0f)
+                    // Between the spotlight and the rows below, settles on one page or the other.
+                    if (pageTop < 0f && end > pageTop && end < 0f) {
+                        val down = if (kotlin.math.abs(v) > 300f) v < 0f else scroll < dragFrom
+                        end = if (down) pageTop else 0f
+                    }
+                    scrollTo(end, 420L)
+                }
+                tracker?.recycle(); tracker = null
+                dragging = false
+            }
+        }
+        return true
     }
 }
 
@@ -1027,14 +1239,28 @@ class WifiIcon(ctx: Context) : View(ctx) {
 
 /** Horizontal row that keeps the focused child near the left edge. */
 @SuppressLint("ViewConstructor")
-class Strip(ctx: Context, private val itemW: Float, private val gap: Float, private val viewport: Float = 1920f - HomeScreen.EDGE * 2) : FrameLayout(ctx) {
+class Strip(ctx: Context, private val itemW: Float, private val gap: Float, private val viewport: Float = Theme.W - HomeScreen.EDGE * 2) : FrameLayout(ctx) {
     private var count = 0
+    /** Coming back to this strip from another row lands on the tile focused last. */
+    var remember = true
     /** Called with the focused index. */
     var onIndex: ((Int) -> Unit)? = null
 
     init {
         clipChildren = false
         clipToPadding = false
+    }
+
+    /** As wide as all its items, so taps reach the ones slid in from the right. */
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        super.onMeasure(widthSpec, heightSpec)
+        var right = measuredWidth
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            val lp = c.layoutParams as? MarginLayoutParams ?: continue
+            right = maxOf(right, lp.leftMargin + c.measuredWidth)
+        }
+        setMeasuredDimension(right, measuredHeight)
     }
 
     fun add(v: View) {
@@ -1062,6 +1288,59 @@ class Strip(ctx: Context, private val itemW: Float, private val gap: Float, priv
         val target = -(i * pitch).coerceAtMost(max)
         animate().translationX(Theme.px(target)).setDuration(Theme.MEDIUM_MS).setInterpolator(Theme.EASE).start()
     }
+
+    // Side swipes slide the row; a quick swipe carries on a little.
+    private val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
+    private var touchX = 0f
+    private var touchY = 0f
+    private var dragFrom = 0f
+    private var dragging = false
+    private var tracker: android.view.VelocityTracker? = null
+
+    private fun minX() = -Theme.px((count * (itemW + gap) - gap - viewport).coerceAtLeast(0f))
+
+    private fun startDrag(e: android.view.MotionEvent) {
+        dragging = true
+        animate().cancel()
+        dragFrom = translationX
+        touchX = e.rawX
+        parent?.requestDisallowInterceptTouchEvent(true)
+        tracker?.recycle()
+        tracker = android.view.VelocityTracker.obtain().also { it.addMovement(e) }
+    }
+
+    override fun onInterceptTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> { touchX = e.rawX; touchY = e.rawY; dragging = false }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = e.rawX - touchX
+                if (kotlin.math.abs(dx) > slop && kotlin.math.abs(dx) > kotlin.math.abs(e.rawY - touchY)) { startDrag(e); return true }
+            }
+        }
+        return false
+    }
+
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> return true
+            android.view.MotionEvent.ACTION_MOVE -> {
+                if (!dragging) { if (kotlin.math.abs(e.rawX - touchX) > slop) startDrag(e) else return true }
+                tracker?.addMovement(e)
+                translationX = (dragFrom + e.rawX - touchX).coerceIn(minX(), 0f)
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                if (dragging) {
+                    val t = tracker
+                    t?.addMovement(e); t?.computeCurrentVelocity(1000)
+                    val end = (translationX + (t?.xVelocity ?: 0f) * 0.25f).coerceIn(minX(), 0f)
+                    animate().translationX(end).setDuration(420L).setInterpolator(Theme.EASE).start()
+                }
+                tracker?.recycle(); tracker = null
+                dragging = false
+            }
+        }
+        return true
+    }
 }
 
 /** Full-bleed art behind the spotlight with soft scrims, cross-fading between titles. */
@@ -1073,14 +1352,58 @@ class Backdrop(ctx: Context) : View(ctx) {
     private val h1 = Paint()
     private val v1 = Paint()
     private val brand = Paint()
+    /** Darkens the hero's edges around the empty right side, so the top bar and text read on bright art. */
+    private val vignette = Paint(Paint.DITHER_FLAG)
     private val src = Rect()
     private val dst = RectF()
+
+    /** The art's main colour, eased in over [TINT_MS]. Falls back to the accent. */
+    private var tint = Theme.accent
+    private var tintAnim: ValueAnimator? = null
+    private val tintP = Paint(Paint.DITHER_FLAG)
+    /** Slow zoom and pan of the art, 0 to 1 and back, at full motion. */
+    private var drift = 0f
+    private var driftAnim: ValueAnimator? = null
+
+    private companion object { const val TINT_MS = 1200L; const val DRIFT_MS = 48_000L }
+
+    private fun tintTo(c: Int) {
+        tintAnim?.cancel()
+        if (Theme.motion == 2) { tint = c; updateShaders(); invalidate(); return }
+        val from = tint
+        tintAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = TINT_MS
+            interpolator = Theme.EASE
+            addUpdateListener { tint = Theme.mix(from, c, it.animatedValue as Float); updateShaders(); invalidate() }
+            start()
+        }
+    }
+
+    private fun startDrift() {
+        if (driftAnim != null || !Theme.moves || !isAttachedToWindow) return
+        driftAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = DRIFT_MS
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            addUpdateListener { drift = it.animatedValue as Float; if (current != null) invalidate() }
+            start()
+        }
+    }
+
+    private fun stopDrift() { driftAnim?.cancel(); driftAnim = null; drift = 0f }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); startDrift() }
+    // Rests while Home is hidden behind another app.
+    override fun onWindowVisibilityChanged(v: Int) { super.onWindowVisibilityChanged(v); if (v == VISIBLE) startDrift() else stopDrift() }
+    override fun onDetachedFromWindow() { stopDrift(); tintAnim?.cancel(); super.onDetachedFromWindow() }
 
     fun set(b: Bitmap?) {
         if (b === current) return
         previous = current
         current = b
         fade = 0f
+        tintTo(b?.let { Polish.artColor(it) } ?: Theme.accent)
         feedGlass()
         ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 260
@@ -1110,6 +1433,7 @@ class Backdrop(ctx: Context) : View(ctx) {
         } else {
             drawArt(c, cur, 1f, still)
             c.drawRect(0f, 0f, w, heroH, h1)
+            c.drawRect(0f, 0f, w, heroH, vignette)
         }
         c.drawRect(0f, 0f, w, heroH + 1, v1)
     }
@@ -1132,8 +1456,21 @@ class Backdrop(ctx: Context) : View(ctx) {
         v1.shader = LinearGradient(0f, 0f, 0f, heroH,
             intArrayOf(Theme.withAlpha(bg, 0.25f), Theme.withAlpha(bg, 0f), Theme.withAlpha(bg, 0.6f), bg),
             floatArrayOf(0f, 0.3f, 0.78f, 1f), Shader.TileMode.CLAMP)
+        val vx = w * 0.70f
+        val vy = heroH * 0.50f
+        vignette.shader = RadialGradient(vx, vy, w * 0.55f,
+            intArrayOf(Theme.withAlpha(bg, 0f), Theme.withAlpha(bg, 0f), Theme.withAlpha(bg, 0.45f), Theme.withAlpha(bg, 0.8f)),
+            floatArrayOf(0f, 0.3f, 0.66f, 1f), Shader.TileMode.CLAMP).also {
+            it.setLocalMatrix(android.graphics.Matrix().apply { setScale(1f, 0.5f, vx, vy) })
+        }
         brand.shader = RadialGradient(w * 0.75f, heroH * 0.35f, w * 0.55f,
-            Theme.withAlpha(Theme.accent, 0.20f), Theme.withAlpha(Theme.accent, 0f), Shader.TileMode.CLAMP)
+            Theme.withAlpha(tint, 0.26f), Theme.withAlpha(tint, 0f), Shader.TileMode.CLAMP)
+        // A wash of the art's colour low on the left, under the text.
+        tintP.shader = RadialGradient(w * 0.18f, heroH * 0.78f, w * 0.7f,
+            intArrayOf(Theme.withAlpha(tint, 0.30f), Theme.withAlpha(tint, 0.12f), Theme.withAlpha(tint, 0f)),
+            floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP).also {
+            it.setLocalMatrix(android.graphics.Matrix().apply { setScale(1f, Theme.px(864f) / (0.7f * w), w * 0.18f, heroH * 0.78f) })
+        }
     }
 
     private fun drawArt(c: Canvas, b: Bitmap, alpha: Float, p: Paint = bmp) {
@@ -1148,7 +1485,13 @@ class Backdrop(ctx: Context) : View(ctx) {
             val sh = (b.width / target).toInt()
             src.set(0, 0, b.width, sh)
         }
-        dst.set(0f, 0f, w, heroH)
+        // Drift: 104% to 110%, panning from the centre towards the left. Off when [p] is the still paint.
+        val k = if (p === still || !Theme.moves) 1f else 1.04f + 0.06f * drift
+        val dw = w * k
+        val dh = heroH * k
+        val fx = if (p === still) 0.5f else 0.5f - 0.12f * drift
+        val left = -(dw - w) * fx
+        dst.set(left, 0f, left + dw, dh)
         p.alpha = (alpha * 255).toInt()
         c.drawBitmap(b, src, dst, p)
     }
@@ -1171,13 +1514,19 @@ class Backdrop(ctx: Context) : View(ctx) {
             c.drawRect(0f, 0f, w, heroH + 1, v1)
             return
         }
+        c.save(); c.clipRect(0f, 0f, w, heroH)
         if (prev != null && fade < 1f) drawArt(c, prev, 1f - fade)
         if (cur != null) drawArt(c, cur, fade) else c.drawRect(0f, 0f, w, heroH, brand)
+        c.drawRect(0f, 0f, w, heroH, tintP)
+        c.restore()
         c.drawRect(0f, 0f, w, heroH, h1)
+        c.drawRect(0f, 0f, w, heroH, vignette)
         c.drawRect(0f, 0f, w, heroH + 1, v1)
     }
 
     fun themeChanged() {
+        if (current == null) tint = Theme.accent
+        if (Theme.moves) startDrift() else stopDrift()
         updateShaders()
         invalidate()
         feedGlass()

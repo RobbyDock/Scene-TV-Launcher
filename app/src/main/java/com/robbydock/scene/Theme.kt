@@ -112,16 +112,41 @@ object Theme {
     /** Pixels per design pixel. Layout is authored on a 1920x1080 canvas. */
     var u = 1f
         private set
+    /** Screen size in design pixels. One side is 1920 or 1080; the other grows on screens that are not 16:9. */
+    var W = 1920f
+        private set
+    var H = 1080f
+        private set
 
     init {
         apply(0, false, 0.55f)
     }
 
+    /** The window size Home measured, which wins over the display size when they differ. */
+    var measured: android.graphics.Rect? = null
+
+    /** True when [w] by [h] pixels is not the size the layout was made for. */
+    fun sizeDiffers(w: Int, h: Int): Boolean {
+        if (w <= 0 || h <= 0) return false
+        val lw = maxOf(w, h); val lh = minOf(w, h)
+        return kotlin.math.abs(lw - W * u) > 2f || kotlin.math.abs(lh - H * u) > 2f
+    }
+
     fun init(ctx: Context) {
-        val m = ctx.resources.displayMetrics
-        val w = maxOf(m.widthPixels, m.heightPixels)
-        val h = minOf(m.widthPixels, m.heightPixels)
+        // The whole window, including any space under hidden system bars.
+        val b = measured ?: if (android.os.Build.VERSION.SDK_INT >= 30) {
+            ctx.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+        } else {
+            val m = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            ctx.getSystemService(android.view.WindowManager::class.java).defaultDisplay.getRealMetrics(m)
+            android.graphics.Rect(0, 0, m.widthPixels, m.heightPixels)
+        }
+        val w = maxOf(b.width(), b.height()).toFloat()
+        val h = minOf(b.width(), b.height()).toFloat()
         u = minOf(w / 1920f, h / 1080f)
+        W = w / u
+        H = h / u
         loadFonts(ctx.applicationContext)
     }
 

@@ -23,9 +23,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private companion object {
         /** Pane titles whose settings live in each profile's own file. */
         val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Clock & Weather", "Spotlight",
-            "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "Export Settings", "Restore Settings", "Reset Home")
+            "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "Locked Apps", "Open on Start", "Export Settings", "Restore Settings", "Reset Home")
         /** Pane titles whose settings every profile shares. */
-        val ALL_PROFILES = setOf("Profiles", "Sounds", "Stremio Account", "Screensaver")
+        val ALL_PROFILES = setOf("Profiles", "Sounds", "Stremio Account", "Screensaver", "Now Playing", "Inputs")
         const val GROUP_LABEL_H = 32f
         const val GROUP_GAP = 14f
         /** Space above the large title, which scrolls away with the list. */
@@ -33,13 +33,16 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         const val TITLE_H = 96f
         const val PANE_X = 984f
         const val PANE_Y = 96f
-        const val PANE_W = 856f
-        const val PANE_H = 1080f - PANE_Y - 40f
+        /** Grows on screens wider than 16:9. */
+        val PANE_W get() = Theme.W - PANE_X - 80f
+        val PANE_H get() = Theme.H - PANE_Y - 40f
     }
 
     /** Keeps the focused row near the middle of the list. */
     private val scroll = object : ScrollView(act) {
         override fun computeScrollDeltaToGetChildRectOnScreen(rect: android.graphics.Rect): Int {
+            // A tapped row is already on screen; moving it would put the next tap on another row.
+            if (isInTouchMode) return 0
             if (childCount == 0) return 0
             val max = (getChildAt(0).height - height).coerceAtLeast(0)
             val target = (rect.centerY() - height * 0.45f).toInt().coerceIn(0, max)
@@ -91,9 +94,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private var glassPreview: GlassPreview? = null
 
     init {
-        place(Backdrop(), 0f, 0f, 1920f, 1080f)
+        place(Backdrop(), 0f, 0f, Theme.W, Theme.H)
         // The large title is the list's first item and scrolls with it.
-        place(listBox, 36f, 0f, 936f, 1080f)
+        place(listBox, 36f, 0f, 936f, Theme.H)
         scroll.addView(list, LayoutParams(-1, -2))
         // Side padding leaves room for the card shadows inside the clip.
         list.setPadding(Theme.ipx(60f), Theme.ipx(TITLE_TOP), Theme.ipx(60f), Theme.ipx(120f))
@@ -249,6 +252,15 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             trail = SettingRow.Trail.NONE
             setOnClickListener { if (act.hiddenContinueCount > 0) { act.unhideAllContinue(); refresh("cwhidden") } }
         }
+        row("rows", R.drawable.ic_view_agenda, "App Rows", if (cfg.rows.isEmpty()) "None" else cfg.rows.joinToString(", ") { it.name }) { paneRows() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("rows0")?.requestFocus() }
+        }
+        row("locks", R.drawable.ic_lock, "Locked Apps", if (cfg.locked.isEmpty()) "None" else "${cfg.locked.size} locked") { paneLocks() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("locks0")?.requestFocus() }
+        }
+        row("start", R.drawable.ic_power_settings_new, "Open on Start", startName() ?: "Nothing") { paneStart() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("start0")?.requestFocus() }
+        }
         endGroup()
 
         group("Stremio")
@@ -321,6 +333,14 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         group("Device")
         row("dream", R.drawable.ic_schedule, "Screensaver", dreamSummary()) { paneDream() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("dream0")?.requestFocus() }
+        }
+        row("music", R.drawable.ic_music_note, "Now Playing", musicSummary()) { paneMusic() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("music0")?.requestFocus() }
+        }
+        val inputs = Inputs.list(act)
+        if (inputs.isNotEmpty()) row("inputs", R.drawable.ic_input, "Inputs",
+            if (Inputs.showOnHome(act)) "${inputs.count { !it.hidden }} on Home" else "Off") { paneInputs() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("inputs0")?.requestFocus() }
         }
         row("remote", R.drawable.ic_settings_remote, "Remote Buttons", remoteSummary()) { paneRemote() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("remote0")?.requestFocus() }
@@ -421,6 +441,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         super.requestChildFocus(child, focused)
         lastPaneTag = focused?.takeIf { isInPane(it) }?.tag
     }
+
+    /** Back from Android's settings: redraws, so a permission just allowed shows at once. */
+    fun onResumed() { current?.let { refresh(it) } }
 
     /** Rebuilds the list after a change, keeping focus on [key], or on the pane control in use. */
     private fun refresh(key: String) {
@@ -1163,6 +1186,61 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
     }
 
+    private fun musicSummary(): String = when {
+        !NowPlaying.hasAccess(act) -> "Needs notification access"
+        NowPlaying.showOnHome(act) || NowPlaying.saver(act) -> "On"
+        else -> "Off"
+    }
+
+    private fun paneMusic() {
+        paneHeader("Now Playing")
+        pane.place(MusicSaver(act, compact = true), 48f, top0, PANE_W - 96f, 300f)
+        val add = optionColumn(top0 + 324f, "music")
+        val access = NowPlaying.hasAccess(act)
+        // Every switch here needs notification access, so they wait, dimmed, until it is allowed.
+        val blocked = { act.toast("Allow notification access first"); pane.findViewWithTag<View>("music0")?.requestFocus() }
+        if (!access) {
+            add(R.drawable.ic_shield, "Allow Notification Access", "", SettingRow.Trail.OPEN) {
+                val i = android.content.Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                if (i.resolveActivity(act.packageManager) != null) act.start(i)
+                else act.push(Dialog(act, R.drawable.ic_shield, "Allow from a computer",
+                    "This TV has no page for notification access. With adb, run: adb shell cmd notification allow_listener " +
+                        NowPlaying.component(act).flattenToString() + " Then open this page again.",
+                    listOf(Dialog.Button("OK", primary = true, focus = true))))
+            }.apply { subtitle = "Scene reads only what is playing" }
+        }
+        fun toggle(icon: Int, title: String, sub: String, key: String, on: Boolean, flip: (Boolean) -> Unit = {}) =
+            add(icon, title, "", SettingRow.Trail.SWITCH) {
+                if (!access) blocked() else { NowPlaying.set(act, key, !on); flip(!on); refresh("music") }
+            }.apply { checked = on; subtitle = sub; dimmed = !access }
+        toggle(R.drawable.ic_music_note, "Show on Home", "Next to the weather", "npHome", NowPlaying.showOnHome(act)) { act.home.nowPlayingChanged() }
+        toggle(R.drawable.ic_lyrics, "Music Screensaver", "Instead of your screensaver while music plays", "npSaver", NowPlaying.saver(act))
+        toggle(R.drawable.ic_lyrics, "Lyrics", "From LRCLIB. Sends only the song name.", "npLyrics", NowPlaying.lyrics(act))
+        add(R.drawable.ic_graphic_eq, "Visualizer", "", SettingRow.Trail.SWITCH) {
+            if (!access) { blocked(); return@add }
+            val on = NowPlaying.viz(act)
+            if (on) { NowPlaying.set(act, "npViz", false); refresh("music") }
+            else act.withMicPermission { ok -> if (ok) NowPlaying.set(act, "npViz", true); refresh("music") }
+        }.apply { checked = NowPlaying.viz(act); subtitle = "Moves to the TV's sound. Needs audio access."; dimmed = !access }
+        add(R.drawable.ic_play_arrow, "Full Screen Preview", "", SettingRow.Trail.NONE) {
+            if (!access) blocked() else act.push(MusicSaverScreen(act))
+        }.dimmed = !access
+    }
+
+    private fun paneInputs() {
+        paneHeader("Inputs", "HDMI inputs on this TV. Turn off the row, or just the inputs you don't use.")
+        val add = optionColumn(top1 + 20f, "inputs")
+        val on = Inputs.showOnHome(act)
+        add(R.drawable.ic_input, "Show on Home", "", SettingRow.Trail.SWITCH) {
+            Inputs.setShowOnHome(act, !on); act.home.rebuild(); refresh("inputs")
+        }.apply { checked = on }
+        for (i in Inputs.list(act)) {
+            add(R.drawable.ic_input, i.name, "", SettingRow.Trail.SWITCH) {
+                Inputs.setHidden(act, i.id, !i.hidden); act.home.rebuild(); refresh("inputs")
+            }.apply { checked = !i.hidden; subtitle = i.system; dimmed = !on }
+        }
+    }
+
     private fun remoteSummary(): String {
         if (!Remap.isEnabled(act)) return "Off"
         val n = Remap.buttons(act).count { Remap.isMapped(act, it.key) }
@@ -1272,6 +1350,49 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         section("First in Grid", top0 + 3 * 96f + 64f)
         tileGrid(act.sortedApps().take(5).map { it.pkg }, false, null, top0 + 3 * 96f + 112f)
+    }
+
+    private fun startName(): String? = act.cfg.startApp.takeIf { it.isNotEmpty() }?.let { act.app(it)?.label ?: it }
+
+    private fun paneRows() {
+        paneHeader("App Rows", "Your own rows under Pinned apps. Add apps from any app's options.")
+        val add = optionColumn(top1 + 20f, "rows")
+        for ((ri, r) in act.cfg.rows.withIndex()) {
+            add(R.drawable.ic_view_agenda, r.name, "${appCount(act.rowApps(r).size)}  ·  ${RowSort.NAMES[r.sort]}", SettingRow.Trail.NONE) {
+                act.rowMenu(ri) { refresh("rows") }
+            }
+        }
+        if (act.cfg.rows.size < Config.MAX_ROWS) add(R.drawable.ic_add, "New Row", "", SettingRow.Trail.NONE) { act.newRow { refresh("rows") } }
+    }
+
+    private fun paneLocks() {
+        paneHeader("Locked Apps", "Locked apps ask for a passcode during their hours. After the right code they stay open for 15 minutes.")
+        val locked = act.cfg.locked.entries.toList()
+        if (locked.isEmpty()) { emptyState(R.drawable.ic_lock, "Hold OK on an app and choose Lock", 300f); return }
+        val add = optionColumn(top1 + 20f, "locks")
+        // Without a passcode the locks can't ask for one, so the list waits, dimmed.
+        val owner = AppLocks.owner() != null
+        for ((pkg, w) in locked) {
+            val label = act.app(pkg)?.label ?: pkg
+            add(R.drawable.ic_lock, label, AppLocks.WINDOWS[w].name, SettingRow.Trail.VALUE) { act.lockPicker(pkg, label) { refresh("locks") } }.dimmed = !owner
+        }
+        if (AppLocks.owner() == null) pane.place(act.label("No profile has a passcode, so these apps open freely. Set one in Profiles.",
+            24f, Theme.TEXT_DIM, Theme.REGULAR, 2), 56f, PANE_H - 120f, PANE_W - 112f, 70f)
+    }
+
+    private fun paneStart() {
+        paneHeader("Open on Start", "Opens one app after the TV starts. Scene stays your Home.")
+        val cfg = act.cfg
+        val add = optionColumn(top1 + 20f, "start")
+        val name = startName()
+        choice(add, R.drawable.ic_close, "Nothing", name == null) { cfg.startApp = ""; act.save(); refresh("start") }
+        if (name != null) choice(add, R.drawable.ic_power_settings_new, name, true) { }
+        add(R.drawable.ic_apps, if (name != null) "Choose Another App" else "Choose an App", "", SettingRow.Trail.CHEVRON) {
+            act.push(AppPicker(act, "Open on start", "Opens after the TV starts", cfg.startApp) { e -> cfg.startApp = e.pkg; act.save(); refresh("start") })
+        }
+        add(R.drawable.ic_schedule, "Also After Sleep", "", SettingRow.Trail.SWITCH) {
+            cfg.startWake = !cfg.startWake; act.save(); refresh("start")
+        }.apply { checked = cfg.startWake; subtitle = "Opens it again when the TV wakes" }
     }
 
     private fun paneHidden() {
