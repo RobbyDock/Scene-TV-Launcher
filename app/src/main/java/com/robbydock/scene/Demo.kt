@@ -18,16 +18,24 @@ object Demo {
 
     fun isSample(pkg: String) = pkg.startsWith(PREFIX)
 
+    /** Installed apps Demo Mode keeps. Phone apps such as Dialer or Camera would look wrong on a TV. */
+    private val realApps = setOf(
+        Config.STREMIO, "com.stremio.tv.boot", "org.jellyfin.androidtv", "com.plexapp.android",
+        "com.google.android.youtube.tv", "com.google.android.youtube", "com.android.vending",
+    )
+
+    fun keepsReal(pkg: String) = pkg in realApps
+
     fun start() { on = true }
     fun stop() { on = false }
 
-    private class SampleApp(val name: String, val icon: Int, val color: Int)
+    private class SampleApp(val name: String, val icon: Int, val color: Int, val row: String = "watch")
 
     private val sampleApps = listOf(
         SampleApp("Netflix", R.drawable.ic_movie, 0xFFE5484D.toInt()),
         SampleApp("ESPN", R.drawable.ic_star, 0xFF2E7DF6.toInt()),
         SampleApp("CNN", R.drawable.ic_language, 0xFF3A4A5E.toInt()),
-        SampleApp("Spotify", R.drawable.ic_volume_up, 0xFFE0408A.toInt()),
+        SampleApp("Spotify", R.drawable.ic_volume_up, 0xFFE0408A.toInt(), "listen"),
         SampleApp("Crunchyroll", R.drawable.ic_mic, 0xFF8E4EC6.toInt()),
         SampleApp("Plex", R.drawable.ic_wallpaper, 0xFF12A594.toInt()),
         SampleApp("Disney+", R.drawable.ic_child_care, 0xFFF5A623.toInt()),
@@ -39,6 +47,9 @@ object Demo {
         SampleApp("Paramount+", R.drawable.ic_bedtime, 0xFF34407A.toInt()),
         SampleApp("Tubi", R.drawable.ic_visibility, 0xFF46505A.toInt()),
     )
+
+    /** The ready-made row a sample app belongs in. */
+    fun row(pkg: String): String = sampleApps.getOrNull(pkg.removePrefix(PREFIX).toIntOrNull() ?: -1)?.row ?: ""
 
     /** Icon from files/demo-icons/<name>.png when present, for example "primevideo.png". */
     private fun iconFile(ctx: Context, name: String, size: Int): Bitmap? {
@@ -74,11 +85,12 @@ object Demo {
         return out
     }
 
-    fun profiles(): List<Profile> = listOf(
-        Profile("p0", "Alex", 0).apply { emoji = "🦊"; admin = true },
+    /** Sample profiles. The viewer's own profile comes first, so Demo Mode keeps their name and colour. */
+    fun profiles(me: Profile): List<Profile> = listOf(
+        Profile("p0", me.name, me.color).apply { emoji = me.emoji; admin = true },
         Profile("p1", "Sam", 9).apply { emoji = "🐼" },
         Profile("p2", "Jordan", 11).apply { emoji = "🎮" },
-        Profile("p3", "Kids", 4).apply { emoji = "🦄" },
+        Profile("p3", "Kids", 4).apply { emoji = "🦄"; kids = true },
     )
 
     /** Mild and clear, in Celsius. */
@@ -111,6 +123,52 @@ object Demo {
             series("tt2467372", "Brooklyn Nine-Nine", 5, 14, 9 * 24 * HOUR, 0.12f),
             series("tt4236770", "Yellowstone", 3, 7, 10 * 24 * HOUR, 0.7f),
         )
+    }
+
+    /** Sample library, newest added first. */
+    private val library: List<SearchHit> by lazy {
+        val now = System.currentTimeMillis()
+        val day = 24 * HOUR
+        fun hit(i: Int, id: String, type: String, name: String, year: String, watched: Boolean = false, progress: Float = 0f) =
+            SearchHit(id, type, name, poster(id), year, watched, progress, now - i * 2 * day)
+        var i = 0
+        listOf(
+            hit(i++, "tt11280740", "series", "Severance", "2022–"),
+            hit(i++, "tt15398776", "movie", "Oppenheimer", "2023", progress = 0.35f),
+            hit(i++, "tt14452776", "series", "The Bear", "2022–"),
+            hit(i++, "tt9362722", "movie", "Spider-Man: Across the Spider-Verse", "2023", watched = true),
+            hit(i++, "tt3581920", "series", "The Last of Us", "2023–"),
+            hit(i++, "tt15239678", "movie", "Dune: Part Two", "2024", progress = 0.25f),
+            hit(i++, "tt5875444", "series", "Slow Horses", "2022–"),
+            hit(i++, "tt6710474", "movie", "Everything Everywhere All at Once", "2022", watched = true),
+            hit(i++, "tt10986410", "series", "Ted Lasso", "2020–2023"),
+            hit(i++, "tt1745960", "movie", "Top Gun: Maverick", "2022", progress = 0.55f),
+            hit(i++, "tt7660850", "series", "Succession", "2018–2023", watched = true),
+            hit(i++, "tt1160419", "movie", "Dune", "2021", watched = true),
+            hit(i++, "tt7366338", "series", "Chernobyl", "2019", watched = true),
+            hit(i++, "tt6751668", "movie", "Parasite", "2019", watched = true),
+            hit(i++, "tt4574334", "series", "Stranger Things", "2016–"),
+            hit(i++, "tt1392190", "movie", "Mad Max: Fury Road", "2015"),
+            hit(i++, "tt0816692", "movie", "Interstellar", "2014", watched = true),
+            hit(i++, "tt0944947", "series", "Game of Thrones", "2011–2019"),
+            hit(i++, "tt1375666", "movie", "Inception", "2010", watched = true),
+            hit(i++, "tt0903747", "series", "Breaking Bad", "2008–2013", watched = true),
+            hit(i++, "tt0468569", "movie", "The Dark Knight", "2008"),
+            hit(i++, "tt0386676", "series", "The Office", "2005–2013"),
+            hit(i++, "tt0133093", "movie", "The Matrix", "1999", watched = true),
+            hit(i++, "tt0110912", "movie", "Pulp Fiction", "1994"),
+        )
+    }
+
+    /** Library titles on [key], like Stremio's saved titles: 0 recently added, 1 A to Z. */
+    fun shelf(key: String, sort: Int, start: Int, count: Int): List<SearchHit> {
+        var list = when (key) {
+            "films" -> library.filter { it.type == "movie" }
+            "series" -> library.filter { it.type == "series" }
+            else -> library
+        }
+        if (sort == 1) list = list.sortedBy { it.name.lowercase().removePrefix("the ") }
+        return list.drop(start).take(count)
     }
 
     private fun poster(id: String) = "https://images.metahub.space/poster/medium/$id/img"

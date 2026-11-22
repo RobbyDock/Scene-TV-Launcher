@@ -31,7 +31,7 @@ object Library {
 
     /** The rows Home shows now. */
     fun shown(act: HomeActivity): List<Shelf> =
-        if (!act.spotlightOn || !onHome(act) || !Watch.signedIn(act) || Demo.on) emptyList()
+        if (!act.spotlightOn || !onHome(act) || !Watch.signedIn(act)) emptyList()
         else Watch.shelves(act).filter { it.key !in act.cfg.libraryOff }
 
     fun cached(key: String): List<SearchHit>? = rows[key]
@@ -145,6 +145,8 @@ class LibraryScreen(act: HomeActivity, private var tab: Int = 0) : OverlayBase(a
     }
 
     init {
+        // Only the pills and posters take focus. Focus on the screen itself greys it out and strands the arrows.
+        isFocusable = false
         // The grid goes in first and is clipped to its own area, so posters scroll under the header, never over it.
         scroller.addView(grid, LayoutParams(-1, -2))
         place(act.clipBox(scroller), 0f, 0f, Theme.W, Theme.H)
