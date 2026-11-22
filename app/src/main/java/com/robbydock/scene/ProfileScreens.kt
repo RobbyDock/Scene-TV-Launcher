@@ -23,14 +23,14 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
         val pitch = if (two) 236f else 280f
         val rowH = if (two) 280f else 0f
         val top = if (two) 300f else 440f
-        place(act.label("Who's watching?", 64f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, top - 220f, 1920f, 84f)
+        place(act.label("Who's watching?", 64f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, top - 220f, Theme.W, 84f)
         var focus: View? = null
         val pops = ArrayList<View>()
         // Position of tile [i]: its row and its place in that row, centred.
         fun slot(i: Int): Pair<Float, Float> {
             val r = if (i < rows[0]) 0 else 1
             val k = if (r == 0) i else i - rows[0]
-            val x0 = (1920f - (rows[r] - 1) * pitch - size) / 2
+            val x0 = (Theme.W - (rows[r] - 1) * pitch - size) / 2
             return (x0 + k * pitch) to (top + r * rowH)
         }
         fun caption(text: String, color: Int, x: Float, y: Float) =
@@ -72,7 +72,7 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
         }
         val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
         row.addView(manage, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
-        place(row, 0f, if (two) 900f else 830f, 1920f, 80f)
+        place(row, 0f, if (two) 900f else 830f, Theme.W, 80f)
         pops.forEachIndexed { i, v -> Motion.pop(v, 80L + i * 50L) }
         post { focus?.requestFocus() }
     }
@@ -127,17 +127,17 @@ class PasscodeScreen(
             colorIndex = profile.color
             isFocusable = false
         }
-        place(av, (1920f - 144f) / 2, 200f, 144f, 144f)
+        place(av, (Theme.W - 144f) / 2, 200f, 144f, 144f)
         place(act.label(if (mode == Mode.SET) "Set a passcode for ${profile.name}" else profile.name, 56f, Theme.TEXT, Theme.BOLD).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-        }, 0f, 380f, 1920f, 76f)
-        place(prompt, 0f, 470f, 1920f, 40f)
-        place(slots, (1920f - 560f) / 2, 560f, 560f, 120f)
+        }, 0f, 380f, Theme.W, 76f)
+        place(prompt, 0f, 470f, Theme.W, 40f)
+        place(slots, (Theme.W - 560f) / 2, 560f, 560f, 120f)
         // The ring sits around the slots' centre while a wait runs.
-        place(ring, (1920f - 160f) / 2, 540f, 160f, 160f)
+        place(ring, (Theme.W - 160f) / 2, 540f, 160f, 160f)
         val help = if (mode == Mode.CHECK) "Use the arrows on your remote. Press OK if you forgot it. Back cancels."
             else "Use the arrows on your remote or controller. Back cancels."
-        place(act.label(help, 24f, Theme.TEXT_DIM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 760f, 1920f, 34f)
+        place(act.label(help, 24f, Theme.TEXT_DIM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 760f, Theme.W, 34f)
         startWaitIfAny()
         post { requestFocus() }
     }
@@ -287,13 +287,13 @@ class PasscodeScreen(
 class AvatarPicker(act: HomeActivity, private val profile: Profile, private val done: () -> Unit) : OverlayBase(act, 1f) {
 
     init {
-        place(act.label("Choose a picture", 64f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 96f, 1920f, 84f)
-        place(act.label(profile.name, 28f, Theme.TEXT_DIM, Theme.MEDIUM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 186f, 1920f, 40f)
+        place(act.label("Choose a picture", 64f, Theme.TEXT, Theme.BOLD).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 96f, Theme.W, 84f)
+        place(act.label(profile.name, 28f, Theme.TEXT_DIM, Theme.MEDIUM).apply { gravity = Gravity.CENTER_HORIZONTAL }, 0f, 186f, Theme.W, 40f)
         val choices = listOf("") + Profiles.EMOJI
         val cols = 12
         val size = 112f
         val pitch = 140f
-        val x0 = (1920f - (cols - 1) * pitch - size) / 2
+        val x0 = (Theme.W - (cols - 1) * pitch - size) / 2
         val y0 = 300f
         var focus: View? = null
         val views = ArrayList<View>()

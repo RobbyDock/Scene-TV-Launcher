@@ -20,6 +20,7 @@ import android.widget.LinearLayout
  */
 @SuppressLint("ViewConstructor")
 class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), HomeActivity.Returnable {
+    override val tapAway = true
 
     private val audio = act.getSystemService(AudioManager::class.java)
     private val tiles = ArrayList<Pair<QuickTile, () -> Unit>>()
@@ -45,7 +46,7 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
         val w = 760f
         val panelH = 850f
         val panel = Panel(act, Theme.R_SHEET, { Theme.surface })
-        place(panel, 1920f - w - 40f, (1080f - panelH) / 2, w, panelH)
+        place(panel, Theme.W - w - 40f, (Theme.H - panelH) / 2, w, panelH)
 
         // Profile header: avatar, name and a switch shortcut.
         val p = Profiles.current

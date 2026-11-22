@@ -8,6 +8,9 @@ import java.util.Locale
 
 class Pin(val pkg: String, val label: String)
 
+/** A row of apps the user made. [sort]: 0 custom, 1 A to Z, 2 most used, 3 last used. */
+class AppRow(var name: String, var sort: Int = 0, val apps: ArrayList<String> = ArrayList())
+
 /** Launcher settings, stored as one small JSON file. The Stremio session is stored separately. */
 class Config {
     var pinned = ArrayList<Pin>()
@@ -45,6 +48,14 @@ class Config {
     var recents = ArrayList<String>()
     /** Apps removed from recents, by package, with the time removed. They return once used again. */
     var recentsRemoved = LinkedHashMap<String, Long>()
+    /** The user's own app rows, shown under Pinned apps. */
+    var rows = ArrayList<AppRow>()
+    /** Locked apps by package, with the hours they lock: an index into [AppLocks.WINDOWS]. */
+    var locked = LinkedHashMap<String, Int>()
+    /** App opened after the TV starts, or empty for none. */
+    var startApp = ""
+    /** Opens [startApp] again when the TV wakes from sleep. */
+    var startWake = false
     var city = ""
     var lat = Double.NaN
     var lon = Double.NaN
@@ -59,6 +70,9 @@ class Config {
         const val MAX_NAMES = 200
         const val STREMIO = "com.stremio.one"
         const val STREMIO_BOOT = "com.stremio.tv.boot"
+        const val MAX_ROWS = 8
+        const val MAX_ROW_APPS = 40
+        const val MAX_ROW_NAME = 20
     }
 
     fun toJson(): JSONObject {
@@ -90,6 +104,10 @@ class Config {
             .put("names", JSONObject().apply { for ((k, v) in names) put(k, v) })
             .put("recents", JSONArray(recents))
             .put("recentsRemoved", JSONObject().apply { for ((k, v) in recentsRemoved) put(k, v) })
+            .put("rows", JSONArray().apply { for (r in rows) put(JSONObject().put("n", r.name).put("s", r.sort).put("a", JSONArray(r.apps))) })
+            .put("locked", JSONObject().apply { for ((k, v) in locked) put(k, v) })
+            .put("startApp", startApp)
+            .put("startWake", startWake)
             .put("city", city)
         if (hasLocation) o.put("lat", lat).put("lon", lon)
         return o
@@ -157,6 +175,25 @@ class Config {
             }
         }
         recentsRemoved = gone
+        val rs = ArrayList<AppRow>()
+        o.optJSONArray("rows")?.let { a ->
+            for (i in 0 until minOf(a.length(), MAX_ROWS)) {
+                val r = a.optJSONObject(i) ?: continue
+                val name = Guard.cleanText(r.optString("n"), MAX_ROW_NAME)
+                if (name.isNotEmpty()) rs.add(AppRow(name, r.optInt("s", 0).coerceIn(0, 3), ArrayList(packages(r.optJSONArray("a"), MAX_ROW_APPS))))
+            }
+        }
+        rows = rs
+        val lk = LinkedHashMap<String, Int>()
+        o.optJSONObject("locked")?.let { m ->
+            for (k in m.keys()) {
+                if (lk.size >= Limits.HIDDEN) break
+                if (Guard.isPackageName(k)) lk[k] = m.optInt(k, 0).coerceIn(0, AppLocks.WINDOWS.size - 1)
+            }
+        }
+        locked = lk
+        startApp = o.optString("startApp", "").takeIf { Guard.isPackageName(it) } ?: ""
+        startWake = o.optBoolean("startWake", false)
         city = Guard.cleanText(o.optString("city", ""), Limits.CITY)
         val la = o.optDouble("lat", Double.NaN)
         val lo = o.optDouble("lon", Double.NaN)

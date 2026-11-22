@@ -82,6 +82,15 @@ class ClockDream : DreamService() {
         if (Profiles.list.isEmpty()) Profiles.load(this)
         val cfg = Store.load(this) ?: Config()
         val accent = Theme.ACCENTS[cfg.accent.coerceIn(0, Theme.ACCENTS.size - 1)].color
+        // While music plays, the music screensaver takes over when it is on.
+        Images.init(this)
+        NowPlaying.start(this)
+        if (NowPlaying.saver(this) && NowPlaying.state == 1) {
+            Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
+            Theme.motion = cfg.motion
+            setContentView(MusicSaver(this))
+            return
+        }
         setContentView(if (mode(this) == AMBIENT) Ambient(this, accent, cfg.clock, cfg.motion) else Face(this, accent, cfg.clock, cfg.motion))
     }
 

@@ -45,6 +45,18 @@ object Apps {
         }
     }
 
+    /** Time each app was on screen in the last 30 days. Empty without usage access. */
+    fun usageTotals(ctx: Context): Map<String, Long> {
+        if (!hasUsageAccess(ctx)) return emptyMap()
+        val usm = ctx.getSystemService(android.app.usage.UsageStatsManager::class.java) ?: return emptyMap()
+        val now = System.currentTimeMillis()
+        return try {
+            usm.queryAndAggregateUsageStats(now - 30 * 86_400_000L, now).mapValues { it.value.totalTimeInForeground }
+        } catch (e: SecurityException) {
+            emptyMap()
+        }
+    }
+
     fun label(pm: PackageManager, pkg: String): String? = try {
         pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
     } catch (e: PackageManager.NameNotFoundException) {

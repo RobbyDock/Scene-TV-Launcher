@@ -142,6 +142,22 @@ class GlassBar(ctx: Context) : FocusView(ctx) {
         return true
     }
 
+    /** Touch: press or drag along the track to set the strength. */
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                if (!isFocused) requestFocus()
+                val pad = Theme.px(32f)
+                val right = width - pad * 2 - pct.measureText("100%")
+                val k = ((e.x - pad) / (right - pad)).coerceIn(0f, 1f)
+                val next = (Math.round((Theme.GLASS_MIN + k * (1f - Theme.GLASS_MIN)) * 20f) / 20f).coerceIn(Theme.GLASS_MIN, 1f)
+                if (next != value) { value = next; Sounds.move(); onChange(next) }
+            }
+        }
+        return true
+    }
+
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
