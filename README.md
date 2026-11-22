@@ -13,7 +13,7 @@
 > [!WARNING]
 > **Scene is in alpha.** It works day to day on the device it was built on, but expect rough edges, missing polish and changes between releases. Keep a backup of your settings and [report anything that breaks](../../issues).
 
-Most stock Android TV and Google TV launchers are heavy, slow on budget hardware and full of ads and recommendations you never asked for. Scene is a home screen for **Stremio users**. It puts what you are watching in Stremio front and centre, keeps your other apps one row below, and does nothing at all when you are not looking at it.
+Most stock Android TV and Google TV launchers are heavy, slow on budget hardware and full of ads and recommendations you never asked for. Scene is a home screen for **Stremio users**, with experimental support for Jellyfin and Plex. It puts what you are watching front and centre, keeps your other apps one row below, and does nothing at all when you are not looking at it.
 
 ## 🍿 Built around Stremio
 
@@ -29,32 +29,57 @@ Sign in once by scanning a code with your phone, and Home becomes your Stremio l
 
 Scene uses Stremio's own account and library, so whatever you do in Stremio shows up on Home, and the other way round.
 
+### Jellyfin and Plex (experimental)
+
+Prefer your own server? In **Settings → Watch With**, pick Jellyfin or Plex instead. Jellyfin signs in with Quick Connect and Plex with a code at plex.tv/link. Continue watching, the spotlight, search and your library then come from your server. Only one app feeds Home at a time, and Stremio stays the recommended choice.
+
 ## ✨ What it does
 
 | | Feature | Details |
 |---|---|---|
-| 📺 | **Apps** | Pinned or recent apps under the spotlight, plus an All apps grid. Pin, rename, move, sort and hide anything. |
+| 📺 | **Apps** | Pinned or recent apps under the spotlight, plus an All apps grid. Long rows show two lines and a See all tile. Pin, rename, move, sort and hide anything. |
+| 🗂️ | **App Rows** | Make your own rows, or turn on ready-made Watch, Listen, Games and Tools rows that fill themselves. |
+| 📚 | **Your Library** | Rows from your library on Home, and a full library screen with films, series and sorting. |
 | 🔎 | **Search** | Films, series, apps and settings in one place, with voice search. |
 | 👥 | **Profiles** | Up to 8 profiles, each with its own Home, accent and picture. Optional D-pad passcodes, admin and standard roles, and a recovery code. |
+| 🧸 | **Kids profiles** | No Spotlight and no Settings. Every other profile needs a passcode first, so nobody gets stuck or slips out. |
+| 🎵 | **Now Playing** | What's playing on Home, with synced lyrics and a visualizer, and a music screensaver while it plays. |
 | ⚡ | **Quick panel** | Network, Bluetooth, volume, display, screensaver and accessibility, one press away. |
 | 🎨 | **Make it yours** | 21 accent colours, True Dark, adjustable glass, motion levels and optional sounds. |
-| 🌤️ | **Clock and weather** | 12 or 24 hour clock, with weather for where you are or a city you pick. |
-| 🌙 | **Screensaver** | An ambient artwork screensaver or a simple clock. |
+| 🌤️ | **Clock and weather** | 12 or 24 hour clock, Celsius or Fahrenheit, and a forecast for where you are or a city you pick. |
+| 🌙 | **Screensaver** | An ambient artwork screensaver, a music screensaver or a simple clock. |
+| 🔄 | **Updates** | Checks GitHub once a day while Home is open, and installs a new version only if it is signed with the same key. |
 | 💾 | **Backup** | Export each profile's settings to one file and restore it later. |
 
 ## 📱 Screenshots
 
 <p align="center">
-  <img src=".github/assets/screens/02-continue-chicago-pd.png" width="49%" alt="Continue watching with the spotlight on a series" />
-  <img src=".github/assets/screens/11-home-all-apps-grid.png" width="49%" alt="All apps grid" />
+  <img src=".github/assets/screens/02-continue-watching.png" width="49%" alt="Continue watching with the spotlight on a series" />
+  <img src=".github/assets/screens/03-home-apps.png" width="49%" alt="Pinned apps and All apps on Home" />
 </p>
 <p align="center">
-  <img src=".github/assets/screens/18-search-results.png" width="49%" alt="Search across films, series and apps" />
-  <img src=".github/assets/screens/14-quick-panel.png" width="49%" alt="Quick panel" />
+  <img src=".github/assets/screens/04-app-menu.png" width="49%" alt="App menu with rename, move, pin and lock" />
+  <img src=".github/assets/screens/05-search.png" width="49%" alt="Search across films, series and apps" />
 </p>
 <p align="center">
-  <img src=".github/assets/screens/15-profile-picker.png" width="49%" alt="Profile picker" />
-  <img src=".github/assets/screens/20-settings-accent.png" width="49%" alt="Accent colours in Settings" />
+  <img src=".github/assets/screens/14-home-library.png" width="49%" alt="Your library row on Home" />
+  <img src=".github/assets/screens/15-library.png" width="49%" alt="Library screen with films and series" />
+</p>
+<p align="center">
+  <img src=".github/assets/screens/06-profile-picker.png" width="49%" alt="Profile picker with a Kids profile" />
+  <img src=".github/assets/screens/10-settings-profiles.png" width="49%" alt="Profiles in Settings" />
+</p>
+<p align="center">
+  <img src=".github/assets/screens/08-watch-with.png" width="49%" alt="Choosing Stremio, Jellyfin or Plex" />
+  <img src=".github/assets/screens/09-app-rows.png" width="49%" alt="App Rows in Settings" />
+</p>
+<p align="center">
+  <img src=".github/assets/screens/07-settings-accent.png" width="49%" alt="Accent colours in Settings" />
+  <img src=".github/assets/screens/11-updates.png" width="49%" alt="Updates in Settings" />
+</p>
+<p align="center">
+  <img src=".github/assets/screens/12-quick-panel.png" width="49%" alt="Quick panel" />
+  <img src=".github/assets/screens/13-setup.png" width="49%" alt="Setup with a live preview of each choice" />
 </p>
 
 ## 🚀 Get started
@@ -62,7 +87,8 @@ Scene uses Stremio's own account and library, so whatever you do in Stremio show
 1. **Download.** Open the [latest release](../../releases/latest) and download `Scene-<version>.apk`.
 2. **Install.** Sideload it with a file manager on the TV, or from a computer with `adb install -r Scene-<version>.apk`.
 3. **Make it Home.** Press the Home button and pick Scene. If your device does not ask, see [Setting Scene as Home](#-setting-scene-as-home).
-4. **Connect Stremio, if you use it.** Open **Settings → Stremio** and scan the code with your phone. Continue watching fills in straight away.
+4. **Connect your watch app.** Setup offers to sign in to Stremio with your phone. To use Jellyfin or Plex instead, open **Settings → Watch With**. Continue watching fills in straight away.
+5. **Later updates.** Scene shows a dot on the settings button when a new version is out. Install it from **Settings → Updates**.
 
 ## 📋 Requirements
 
@@ -74,20 +100,21 @@ Scene uses Stremio's own account and library, so whatever you do in Stremio show
 | **Processor** | 32-bit or 64-bit ARM, or x86. No native code | 4-core 32-bit ARM |
 | **Display** | 720p | 1080p UI on a 4K output |
 | **Remote** | D-pad with OK, Back and Home | onn voice remote |
-| **Network** | Optional. Needed for Stremio, artwork and weather | Wi-Fi |
-| **Storage** | About 250 KB for the APK | |
+| **Network** | Optional. Needed for your watch app, artwork, weather and updates | Wi-Fi |
+| **Storage** | About 450 KB for the APK | |
 
-Scene targets API 36 and is built against API 37. Stremio is optional, and voice search needs a remote or device with a microphone.
+Scene targets API 36 and is built against API 37. Stremio, Jellyfin and Plex are optional, and voice search needs a remote or device with a microphone.
 
 A few extras need a newer Android. On 8.0 and 8.1 focus glows are not tinted. On Android 10 and older, local weather uses the device's last known location, so picking a city is more reliable there, and the search screen does not make room for the on-screen keyboard.
 
 ## 🔒 Privacy
 
 - **No ads, no analytics, no accounts.** Scene has no server of its own and sends nothing about you anywhere.
-- **Direct connections only.** Scene talks to Stremio for your library, Cinemeta for artwork and details, and Open-Meteo for weather. Nothing else.
-- **Nothing in the background.** No services, no scheduled jobs. Scene does its work while it is on screen and stops when it is not.
-- **Permissions on demand.** The microphone is asked for only when you use voice search, and location only if you choose local weather.
-- **Backups stay clean.** Exported files never contain passcodes, recovery codes or your Stremio sign-in.
+- **Direct connections only.** Scene talks to your watch app (Stremio and Cinemeta, your Jellyfin server, or Plex), Open-Meteo for weather, LRCLIB for lyrics and GitHub for update checks. Nothing else.
+- **Nothing in the background.** No services, no scheduled jobs. Scene does its work while it is on screen and stops when it is not. The daily update check runs only while Home is open, and you can turn it off.
+- **Permissions on demand.** The microphone is asked for only when you use voice search, location only if you choose local weather, and notification access only if you turn on Now Playing.
+- **Sign-ins stay on the TV.** Stremio, Jellyfin and Plex sign-ins are encrypted with the Android Keystore.
+- **Backups stay clean.** Exported files never contain passcodes, recovery codes or your sign-ins.
 
 ## 🏠 Setting Scene as Home
 
@@ -134,7 +161,7 @@ Yes. Scene is free and open source, with no ads or in-app purchases. If you want
 
 <br>
 
-Scene is made for Stremio users, and Stremio is where it shines. It still works without it as a clean app launcher with search, profiles and a quick panel, but you lose Continue watching, the spotlight and title search.
+Scene is made for Stremio users, and Stremio is where it shines. Jellyfin and Plex work too, as an experimental choice. Without any of them Scene is still a clean app launcher with search, profiles and a quick panel, but you lose Continue watching, the spotlight and title search.
 
 </details>
 
@@ -144,6 +171,15 @@ Scene is made for Stremio users, and Stremio is where it shines. It still works 
 <br>
 
 Yes. The remote's mic button still goes to the Google Assistant, and Scene's own search has a voice button of its own.
+
+</details>
+
+<details>
+<summary><b>How do Kids profiles work?</b></summary>
+
+<br>
+
+Make a profile Kids in **Settings → Profiles**. A Kids profile has no Spotlight and no Settings. To turn one on, every other profile needs a passcode and an admin enters theirs. To leave, enter the passcode of the profile you are switching to, or any admin's.
 
 </details>
 
@@ -169,7 +205,9 @@ adb shell am broadcast -a com.robbydock.scene.CLEAR_PASSCODES -n com.robbydock.s
 
 <br>
 
-Download the newest APK from [Releases](../../releases) and install it over the old one with `adb install -r`. Your profiles and settings stay in place.
+From 0.2.0 on, Scene checks for new releases by itself. When the settings button shows a dot, open **Settings → Updates** and install it. Android asks you to confirm, and Scene refuses any download that isn't signed like the copy you have.
+
+You can also download the newest APK from [Releases](../../releases) and install it over the old one with `adb install -r`. Your profiles and settings stay in place.
 
 </details>
 

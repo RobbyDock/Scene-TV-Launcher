@@ -88,7 +88,8 @@ object Watch {
 
     fun name(ctx: Context) = source(ctx).label
     fun isStremio(ctx: Context) = source(ctx) == Source.STREMIO
-    fun appInstalled(ctx: Context) = Apps.isInstalled(ctx.packageManager, source(ctx).pkg)
+    /** Demo Mode shows the full spotlight, as if the app were installed. */
+    fun appInstalled(ctx: Context) = Demo.on || Apps.isInstalled(ctx.packageManager, source(ctx).pkg)
 
     /**
      * Makes [to] the app Scene watches with, and signs out of the others. Called once [to] is
@@ -231,7 +232,7 @@ object Watch {
         if (isStremio(ctx)) listOf("Recently added", "A to Z") else listOf("Recently added", "A to Z", "Release year", "Unwatched")
 
     /** Titles on [key], sorted by [sort] (an index into [sorts]), from [start]. */
-    fun shelf(ctx: Context, key: String, sort: Int, start: Int, count: Int): List<SearchHit> = when (source(ctx)) {
+    fun shelf(ctx: Context, key: String, sort: Int, start: Int, count: Int): List<SearchHit> = if (Demo.on) Demo.shelf(key, sort, start, count) else when (source(ctx)) {
         Source.STREMIO -> { Stremio.loadSaved(ctx); Stremio.saved(key, sort, start, count) }
         Source.JELLYFIN -> Jellyfin.shelf(ctx, key, sort, start, count)
         Source.PLEX -> Plex.shelf(ctx, key, sort, start, count)

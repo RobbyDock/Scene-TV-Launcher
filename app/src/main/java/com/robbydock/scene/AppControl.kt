@@ -90,6 +90,7 @@ object AppCategory {
 
     /** The row an app belongs in, or "" for none. */
     fun of(ctx: android.content.Context, pkg: String): String = cache.getOrPut(pkg) {
+        if (Demo.isSample(pkg)) return@getOrPut Demo.row(pkg)
         KNOWN[pkg] ?: try {
             val info = ctx.packageManager.getApplicationInfo(pkg, 0)
             val cat = info.category

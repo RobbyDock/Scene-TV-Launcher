@@ -491,16 +491,17 @@ class HomeActivity : Activity() {
         if (Demo.on) return
         realCfg = cfg
         Demo.start()
-        Profiles.startDemo(Demo.profiles())
+        Profiles.startDemo(Demo.profiles(Profiles.current))
         val pm = packageManager
         cfg = cfg.copy().apply {
             pinned = Demo.pins { Apps.isInstalled(pm, it) }
             accent = Profiles.current.color
-            hidden.clear(); hidden.add(Config.STREMIO_BOOT); cwHidden.clear(); names.clear(); recents.clear(); appOrder.clear()
+            hidden.clear(); hidden.add(Config.STREMIO_BOOT); cwHidden.clear(); names.clear(); recents.clear(); appOrder.clear(); libraryOff.clear(); libraryHome = -1
             showPinned = true; showRecent = false; spotlight = true; clockOn = true; showDate = true; weatherOn = true; weatherDetail = 0
             city = "Chicago"
         }
         weather = Demo.weather()
+        Library.clear()
         setContinue(Demo.continueItems())
         applyNames()
         themeChanged()
@@ -516,6 +517,7 @@ class HomeActivity : Activity() {
         Profiles.endDemo()
         cfg = realCfg ?: Store.load(this) ?: cfg
         realCfg = null
+        Library.clear()
         weather = Weather.cached(this)
         setContinue(Watch.cachedContinue(this, online))
         applyNames()
@@ -547,7 +549,7 @@ class HomeActivity : Activity() {
 
     /** Applies this profile's custom names, keeping A to Z order by the name shown. */
     private fun applyNames() {
-        val base = if (Demo.on) systemApps + Demo.apps(this, Theme.ipx(176f)) else systemApps
+        val base = if (Demo.on) systemApps.filter { Demo.keepsReal(it.pkg) } + Demo.apps(this, Theme.ipx(176f)) else systemApps
         apps = base.map { e -> cfg.names[e.pkg]?.let { AppEntry(e.pkg, it, e.icon, e.installed) } ?: e }
             .sortedBy { it.label.lowercase() }
     }
