@@ -55,7 +55,9 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
         Shortcut("Sounds", "Appearance", "sound sounds click beep audio feedback", R.drawable.ic_volume_up, settingsKey = "sounds"),
         Shortcut("Home Row", "Home", "home row recent recents apps pinned none", R.drawable.ic_apps, settingsKey = "homerow"),
         Shortcut("Hidden Apps", "Home", "hide hidden apps unhide", R.drawable.ic_visibility_off, settingsKey = "hidden"),
-        Shortcut("Stremio Account", "Home", "stremio account sign in login sign out", R.drawable.ic_account_circle, settingsKey = "account"),
+        Shortcut("Watch With", "Home", "watch with stremio jellyfin plex source app", R.drawable.ic_movie, settingsKey = "watch"),
+        Shortcut("Account", "Home", "stremio jellyfin plex account sign in login sign out disconnect", R.drawable.ic_account_circle, settingsKey = "account"),
+        Shortcut("Your Library", "Spotlight", "library films movies series shows rows", R.drawable.ic_view_agenda, settingsKey = "spot"),
         Shortcut("Backup & Restore", "Home", "backup export restore import", R.drawable.ic_backup, settingsKey = "export"),
         Shortcut("Network & Internet", "TV settings", "wifi wi-fi network internet ethernet connection proxy", R.drawable.ic_wifi, Settings.ACTION_WIFI_SETTINGS),
         Shortcut("Remotes & Accessories", "TV settings", "bluetooth remote controller gamepad accessories pair headphones speaker", R.drawable.ic_settings_remote, Settings.ACTION_BLUETOOTH_SETTINGS),
@@ -270,7 +272,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
             else if (!fetching && page < 40) {
                 fetching = true
                 val gen = generation
-                Net.run({ Stremio.popular(page) }) { hits ->
+                Net.run({ Watch.popular(act, page) }) { hits ->
                     fetching = false
                     if (gen != generation || closed || hits.isNullOrEmpty()) return@run
                     page++
@@ -319,7 +321,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
             val loading = act.label("Searching…", 24f, Theme.TEXT_DIM)
             results.place(loading, RES_X, y + 64f, RES_W, 34f)
             val rowY = y + 64f
-            Net.run({ Stremio.search(q) }) { hits ->
+            Net.run({ Watch.search(act, q) }) { hits ->
                 if (gen != generation || closed) return@run
                 loading.visibility = GONE
                 if (hits.isNullOrEmpty()) {
@@ -345,7 +347,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
             y += 410f
         } else if (q.isEmpty()) {
             // Empty state: popular titles to browse, then quick actions.
-            results.place(act.label("Popular on Stremio", 30f, Theme.TEXT, Theme.SEMIBOLD), RES_X, y, RES_W, 40f)
+            results.place(act.label(Watch.popularTitle(act), 30f, Theme.TEXT, Theme.SEMIBOLD), RES_X, y, RES_W, 40f)
             val status = act.label(if (act.online) "Loading…" else "You're offline. Popular titles come back when the connection does.", 24f, Theme.TEXT_DIM)
             results.place(status, RES_X, y + 64f, RES_W, 34f)
             val rowY = y + 64f
@@ -355,7 +357,7 @@ class SearchScreen(act: HomeActivity, private val startVoice: Boolean) : Overlay
                 edgeRow(rowY, 300f, 28f, shells, false) { Theme.ipx(200f) }
                 status.visibility = GONE
                 val shellRow = results.getChildAt(results.childCount - 1)
-                Net.run({ Stremio.popular() }) { hits ->
+                Net.run({ Watch.popular(act) }) { hits ->
                     if (gen != generation || closed) return@run
                     results.removeView(shellRow)
                     if (hits.isNullOrEmpty()) {

@@ -37,14 +37,32 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
         postDelayed(tick, 60_000 - System.currentTimeMillis() % 60_000 + 50)
     }
 
+    /** Volume keys change the level while the panel is open. */
+    private var volumeUpdate: (() -> Unit)? = null
+    private val volumeChanged = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: android.content.Intent) { volumeUpdate?.invoke() }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        val f = android.content.IntentFilter().apply {
+            addAction("android.media.VOLUME_CHANGED_ACTION")
+            addAction("android.media.STREAM_MUTE_CHANGED_ACTION")
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) act.registerReceiver(volumeChanged, f, android.content.Context.RECEIVER_NOT_EXPORTED)
+        else act.registerReceiver(volumeChanged, f)
+    }
+
     override fun onDetachedFromWindow() {
         removeCallbacks(tick)
+        try { act.unregisterReceiver(volumeChanged) } catch (e: IllegalArgumentException) { }
         super.onDetachedFromWindow()
     }
 
     init {
         val w = 760f
-        val panelH = 850f
+        // A Kids profile has one row of tiles and no settings links.
+        val panelH = if (Profiles.current.kids) 520f else 850f
         val panel = Panel(act, Theme.R_SHEET, { Theme.surface })
         place(panel, Theme.W - w - 40f, (Theme.H - panelH) / 2, w, panelH)
 
@@ -69,9 +87,13 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
             network().let { netTile.status = it.first; netTile.active = it.second }
             bluetooth().let { btTile.status = it.first; btTile.active = it.second }
         }
-        states()
-        tiles.add(netTile to states)
-        val rows = listOf(
+        // A Kids profile keeps only the volume: the rest opens system or Scene settings.
+        val kids = p.kids
+        if (!kids) {
+            states()
+            tiles.add(netTile to states)
+        }
+        val rows = if (kids) listOf(listOf(volumeTile())) else listOf(
             listOf(netTile, btTile, volumeTile()),
             listOf(
                 tile(R.drawable.ic_display_settings, "Display", "", false) { act.openDisplaySettings() },
@@ -88,19 +110,24 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
         }
 
         val links = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; clipChildren = false }
-        panel.place(links, 34f, 612f, w - 68f, 200f)
-        links.addView(SettingRow(act, R.drawable.ic_dashboard_customize, "Launcher Settings").apply {
+        panel.place(links, 34f, if (kids) 400f else 612f, w - 68f, 200f)
+        val update = Updates.shouldNotify(act)
+        if (kids) links.addView(act.label("Settings are off in Kids profiles.", 24f, Theme.TEXT_DIM).apply { setPadding(Theme.ipx(14f), 0, 0, 0) },
+            LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
+        else links.addView(SettingRow(act, R.drawable.ic_dashboard_customize, "Launcher Settings").apply {
             trail = SettingRow.Trail.CHEVRON
             divider = false
-            setOnClickListener { act.pop(); act.openSettings() }
+            // The same quiet note as the dot on Home's settings button.
+            if (update) { pill = "Update"; pillAccent = true }
+            setOnClickListener { act.pop(); if (update) act.openSettings("update") else act.openSettings() }
         }, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
-        links.addView(SettingRow(act, R.drawable.ic_settings, "System Settings").apply {
+        if (!kids) links.addView(SettingRow(act, R.drawable.ic_settings, "System Settings").apply {
             trail = SettingRow.Trail.OPEN
             divider = true
             setOnClickListener { act.openSystemSettings(Settings.ACTION_SETTINGS) }
         }, LinearLayout.LayoutParams(-1, Theme.ipx(96f)))
 
-        post { tiles.firstOrNull()?.first?.requestFocus() }
+        post { tiles.firstOrNull()?.first?.requestFocus() ?: grid.requestFocus() }
     }
 
     override fun onReturn() {
@@ -151,6 +178,7 @@ class QuickPanel(act: HomeActivity) : OverlayBase(act, 0.45f, haze = true), Home
             t.level = if (tv) -1f else v.toFloat() / max
         }
         update()
+        volumeUpdate = update
         t.setOnClickListener { act.openSoundSettings() }
         tiles.add(t to update)
         return t

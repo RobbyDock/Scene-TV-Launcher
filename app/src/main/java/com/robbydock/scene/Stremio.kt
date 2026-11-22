@@ -3,18 +3,14 @@ package com.robbydock.scene
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.security.KeyStore
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
@@ -28,6 +24,8 @@ class CwItem(
     val inLibrary: Boolean = true, val newCount: Int = 0,
     /** Stremio tells about new episodes of this series. */
     val notify: Boolean = true,
+    /** Card art from Jellyfin or Plex: the episode's own still, or the film's backdrop. */
+    val still: String? = null,
 ) {
     val season: Int? get() = videoId?.split(":")?.getOrNull(1)?.toIntOrNull()
     val episode: Int? get() = videoId?.split(":")?.getOrNull(2)?.toIntOrNull()
@@ -40,21 +38,23 @@ class CwItem(
     fun toJson(): JSONObject = JSONObject().put("id", id).put("type", type).put("name", name)
         .put("poster", poster ?: "").put("video", videoId ?: "").put("off", offsetMs)
         .put("dur", durationMs).put("last", lastWatched).put("lib", inLibrary).put("new", newCount).put("notify", notify)
+        .put("still", still ?: "")
 
     fun withNew(count: Int, video: String?, at: Long) =
         CwItem(id, type, name, poster, video ?: videoId, if (video != null && video != videoId) 0 else offsetMs,
-            if (video != null && video != videoId) 0 else durationMs, maxOf(lastWatched, at), inLibrary, count, notify)
+            if (video != null && video != videoId) 0 else durationMs, maxOf(lastWatched, at), inLibrary, count, notify, still)
 
     companion object {
         fun fromJson(o: JSONObject) = CwItem(
             o.getString("id"), o.optString("type", "movie"), o.optString("name"),
             o.optString("poster").ifEmpty { null }, o.optString("video").ifEmpty { null },
             o.optLong("off"), o.optLong("dur"), o.optLong("last"), o.optBoolean("lib", true), o.optInt("new"), o.optBoolean("notify", true),
+            o.optString("still").ifEmpty { null },
         )
     }
 }
 
-class Video(val id: String, val season: Int, val episode: Int, val title: String, val overview: String, val released: Long = 0L)
+class Video(val id: String, val season: Int, val episode: Int, val title: String, val overview: String, val released: Long = 0L, val thumb: String? = null)
 
 /** A followed series that may have new episodes. */
 class Followed(val id: String, val name: String, val poster: String?, val lastWatched: Long, val videoId: String?)
@@ -69,7 +69,11 @@ class Meta(
     val trailer: String? = null,
 )
 
-class SearchHit(val id: String, val type: String, val name: String, val poster: String?, val year: String)
+class SearchHit(
+    val id: String, val type: String, val name: String, val poster: String?, val year: String,
+    /** Library screen marks: watched, and how far through. */
+    val watched: Boolean = false, val progress: Float = 0f, val added: Long = 0L,
+)
 
 class LinkCode(val code: String, val link: String, val qr: String)
 
@@ -79,6 +83,8 @@ object Stremio {
     private const val LINK = "https://link.stremio.com/api/v2/"
     private const val CINEMETA = "https://v3-cinemeta.strem.io/"
     private const val CW_CACHE = "continue.json"
+    /** Saved titles, so the library rows show after a restart while offline. */
+    private const val LIB_CACHE = "stremio-library.json"
 
     private val metaCache = android.util.LruCache<String, Meta>(160)
     private val searchCache = android.util.LruCache<String, List<SearchHit>>(40)
@@ -96,6 +102,9 @@ object Stremio {
     fun signOut(ctx: Context) {
         Session.clear(ctx)
         Store.delete(ctx, CW_CACHE)
+        Store.delete(ctx, LIB_CACHE)
+        savedTitles = emptyList()
+        libraryLoaded = false
     }
 
     // ------------------------------------------------------------ link code sign-in
@@ -130,6 +139,22 @@ object Stremio {
     }
 
     /** The saved Continue watching row, filtered by [CacheAge]. A damaged file is deleted. */
+    /** Fills the saved titles from the last fetch, when this run has none yet. Off the main thread. */
+    fun loadSaved(ctx: Context) {
+        if (savedTitles.isNotEmpty() || libraryLoaded) return
+        val text = Store.readText(ctx, LIB_CACHE) ?: return
+        val read = try {
+            val a = JSONArray(text)
+            (0 until a.length()).mapNotNull { i ->
+                val o = a.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id").takeIf { it.startsWith("tt") } ?: return@mapNotNull null
+                SearchHit(id, o.optString("t"), o.optString("n", id), o.optString("p").ifEmpty { null }, o.optString("y"), added = o.optLong("a"))
+            }
+        } catch (e: Exception) { Store.delete(ctx, LIB_CACHE); emptyList() }
+        // A fetch that finished meanwhile is newer, so it wins.
+        if (savedTitles.isEmpty() && !libraryLoaded) savedTitles = read
+    }
+
     fun cachedContinue(ctx: Context, online: Boolean): List<CwItem> {
         val age = continueAge(ctx) ?: return emptyList()
         val text = Store.readText(ctx, CW_CACHE) ?: return emptyList()
@@ -158,6 +183,7 @@ object Stremio {
         val arr = o.optJSONArray("result") ?: JSONArray()
         val out = ArrayList<CwItem>()
         val follow = ArrayList<Followed>()
+        val keep = ArrayList<SearchHit>()
         val yearAgo = System.currentTimeMillis() - 365L * 24 * 3600_000
         for (i in 0 until arr.length()) {
             val it = arr.optJSONObject(i) ?: continue
@@ -171,6 +197,7 @@ object Stremio {
             val last = parseTime(st.opt("lastWatched")).takeIf { t -> t > 0 } ?: parseTime(it.opt("_mtime"))
             val poster = it.optString("poster").ifEmpty { null }
             val video = st.optString("video_id").ifEmpty { null }
+            if (!removed && !temp) keep.add(SearchHit(id, type, it.optString("name", id), poster, it.optString("year"), added = parseTime(it.opt("_ctime"))))
             // Series kept in the library get new-episode notifications.
             if (type == "series" && !removed && !temp && !st.optBoolean("noNotif") && last > yearAgo) {
                 follow.add(Followed(id, it.optString("name", id), poster, last, video))
@@ -181,6 +208,11 @@ object Stremio {
         }
         out.sortByDescending { it.lastWatched }
         followed = follow
+        savedTitles = keep.sortedByDescending { it.added }
+        libraryLoaded = true
+        Store.writeText(ctx, LIB_CACHE, JSONArray(savedTitles.map { h ->
+            JSONObject().put("id", h.id).put("t", h.type).put("n", h.name).put("p", h.poster ?: "").put("y", h.year).put("a", h.added)
+        }).toString())
         Store.writeText(ctx, CW_CACHE, JSONArray(out.map { it.toJson() }).toString())
         prefetch(ctx, out)
         return out
@@ -196,6 +228,23 @@ object Stremio {
         if (o.has("error")) return null
         val r = o.opt("result") ?: return null
         return r.toString().hashCode()
+    }
+
+    /** Titles saved in the library, newest first, from the last library fetch. */
+    @Volatile private var savedTitles: List<SearchHit> = emptyList()
+    /** True once this process has fetched the library, even when it holds no titles. */
+    @Volatile var libraryLoaded = false
+        private set
+
+    /** Saved titles for the library row ("yours") or the Library tabs ("films", "series"). */
+    fun saved(key: String, sort: Int, start: Int, count: Int): List<SearchHit> {
+        var list = when (key) {
+            "films" -> savedTitles.filter { it.type == "movie" }
+            "series" -> savedTitles.filter { it.type == "series" }
+            else -> savedTitles
+        }
+        if (sort == 1) list = list.sortedBy { it.name.lowercase() }
+        return list.drop(start).take(count)
     }
 
     /** Library series checked for new episodes, from the last library fetch. */
@@ -597,8 +646,6 @@ object Stremio {
 
     /** The auth key is encrypted with an Android Keystore AES key before it touches disk. */
     private object Session {
-        private const val ALIAS = "scene_stremio_session"
-
         fun prefs(ctx: Context) = ctx.getSharedPreferences("session", Context.MODE_PRIVATE)
 
         fun save(ctx: Context, key: String) {
@@ -628,18 +675,6 @@ object Stremio {
             prefs(ctx).edit().clear().apply()
         }
 
-        private fun secret(): SecretKey {
-            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
-            val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-            gen.init(
-                KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
-                    .build(),
-            )
-            return gen.generateKey()
-        }
+        private fun secret(): SecretKey = KeyBox.secret()
     }
 }

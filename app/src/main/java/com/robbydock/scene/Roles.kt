@@ -7,7 +7,10 @@ package com.robbydock.scene
 object Roles {
     /** Makes the first profile an admin when none is marked. */
     fun ensureAdmin(list: List<Profile>) {
-        if (list.isNotEmpty() && list.none { it.admin }) list.first().admin = true
+        if (list.isEmpty() || list.any { it.admin }) return
+        val p = list.firstOrNull { !it.kids } ?: list.first()
+        p.admin = true
+        p.kids = false
     }
 
     /** False when [p] is the only admin. */
@@ -20,6 +23,7 @@ object Roles {
     fun setAdmin(list: List<Profile>, p: Profile, admin: Boolean): Boolean {
         if (p.admin == admin) return true
         if (!admin && !canDemote(list, p)) return false
+        if (admin && p.kids) return false
         p.admin = admin
         if (!admin) { p.recoveryHash = ""; p.recoverySalt = "" }
         return true

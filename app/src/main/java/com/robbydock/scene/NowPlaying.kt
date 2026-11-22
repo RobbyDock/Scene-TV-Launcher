@@ -50,6 +50,13 @@ object NowPlaying {
 
     fun component(ctx: Context) = ComponentName(ctx, MediaListener::class.java)
 
+    /**
+     * False on TVs with no page to allow notification access, where Now Playing can't work without
+     * a computer. Scene then leaves music out instead of asking for something it can't get.
+     */
+    fun available(ctx: Context): Boolean = hasAccess(ctx) ||
+        android.content.Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).resolveActivity(ctx.packageManager) != null
+
     /** True when notification access is allowed, which Android needs before sharing media sessions. */
     fun hasAccess(ctx: Context): Boolean {
         val list = Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners").orEmpty()

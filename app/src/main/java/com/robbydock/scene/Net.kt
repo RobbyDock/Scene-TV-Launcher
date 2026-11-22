@@ -43,7 +43,29 @@ object Net {
         lowPool.execute { try { work() } catch (e: Exception) { } }
     }
 
+    /**
+     * Plain HTTP only reaches the home network: private, link-local and .local addresses.
+     * Anything on the internet must use HTTPS.
+     */
+    fun checkAddress(url: String) {
+        val u = URL(url)
+        if (u.protocol == "https") return
+        if (u.protocol != "http" || !isLocal(u.host)) throw IllegalStateException("Plain HTTP is only allowed on the home network")
+    }
+
+    fun isLocal(host: String): Boolean {
+        val h = host.lowercase().trim('[', ']')
+        if (h == "localhost" || h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")) return true
+        val p = h.split('.').mapNotNull { it.toIntOrNull() }
+        if (p.size == 4 && h.count { it == '.' } == 3) {
+            return p[0] == 10 || p[0] == 127 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && p[1] in 16..31) || (p[0] == 169 && p[1] == 254)
+        }
+        // IPv6 unique local and link-local.
+        return h.startsWith("fd") || h.startsWith("fe80") || h == "::1"
+    }
+
     fun getBytes(url: String, timeoutMs: Int = 12_000): ByteArray {
+        checkAddress(url)
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = timeoutMs
         c.readTimeout = timeoutMs
@@ -62,7 +84,40 @@ object Net {
 
     fun getJson(url: String): JSONObject = JSONObject(String(getBytes(url), Charsets.UTF_8))
 
+    class HttpError(val code: Int) : Exception("HTTP $code")
+
+    /**
+     * One request with extra [headers]. Returns the body as text; throws [HttpError] for a
+     * reply outside 2xx. Used by the Jellyfin and Plex clients.
+     */
+    fun request(
+        url: String, method: String = "GET", body: String? = null, headers: Map<String, String> = emptyMap(),
+        timeoutMs: Int = 12_000,
+    ): String {
+        checkAddress(url)
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = timeoutMs
+        c.readTimeout = timeoutMs + 3_000
+        c.requestMethod = method
+        c.setRequestProperty("User-Agent", "Scene/1.0 (Android TV launcher)")
+        c.setRequestProperty("Accept", "application/json")
+        for ((k, v) in headers) c.setRequestProperty(k, v)
+        try {
+            if (body != null) {
+                c.doOutput = true
+                if (!headers.containsKey("Content-Type")) c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            }
+            val code = c.responseCode
+            if (code !in 200..299) throw HttpError(code)
+            return c.inputStream?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
+        } finally {
+            c.disconnect()
+        }
+    }
+
     fun postJson(url: String, body: JSONObject): JSONObject {
+        checkAddress(url)
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 12_000
         c.readTimeout = 15_000

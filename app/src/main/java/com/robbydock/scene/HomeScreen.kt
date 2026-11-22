@@ -41,7 +41,13 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         const val PINNED_Y_WITH_SPOT = 1150f
         /** All apps columns: 8 on a 16:9 screen, more on wider ones. */
         val GRID_COLS get() = maxOf(8, ((Theme.W - EDGE * 2 + TILE_GAP) / (TILE + TILE_GAP)).toInt())
-        val TOP_KEYS = setOf("search", "mic", "gear", "avatar", "np")
+        val TOP_KEYS = setOf("search", "mic", "gear", "avatar", "np", "info")
+        /** How long Home rests on a title before its art starts to drift. */
+        const val IDLE_MS = 4_000L
+        /** Titles in a library row before its See all card. */
+        const val ROW_TITLES = 15
+        /** Narrowest Now Playing, so the song stays readable in a small pill's place. */
+        const val NP_MIN = 420f
     }
 
     private val ambience = Ambience(act)
@@ -108,12 +114,10 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         addView(content, LayoutParams(-1, -1))
         addView(topScrim, LayoutParams(-1, Theme.ipx(260f)))
         if (Theme.CINEMA) {
-            // A bare top bar: the search pill fits its text, the mic lives in Search, and nothing shows a ring.
+            // A bare settings button. Every control keeps the white focus ring.
             gear.bare = true
-            for (v in listOf(search, gear, avatar)) v.ringless = true
-            mic.visibility = GONE
-            place(search, EDGE, 48f, search.fitWidth(), 88f)
-        } else place(search, EDGE, 48f, 760f, 88f)
+        }
+        place(search, EDGE, 48f, 760f, 88f)
         place(mic, EDGE + 684f, 60f, 64f, 64f)
         place(info, 0f, 48f, -1f, 88f)
         place(gear, Theme.W - EDGE - 88f, 48f, 88f, 88f)
@@ -141,6 +145,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         avatar.focusKey = "avatar"
         avatar.contentDescription = "Switch profile"
         np.focusKey = "np"
+        info.focusKey = "info"
+        info.contentDescription = "Weather and forecast"
+        info.id = View.generateViewId()
+        info.setOnClickListener { act.openForecast() }
+        keyed["info"] = info
         np.contentDescription = "Now playing"
         np.setOnClickListener { NowPlaying.playPause() }
         np.setOnLongClickListener { act.nowPlayingMenu(); true }
@@ -149,6 +158,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         search.setOnClickListener { act.openSearch(false) }
         mic.setOnClickListener { act.openSearch(true) }
         gear.setOnClickListener { act.push(QuickPanel(act)) }
+        updateBadge()
         avatar.setOnClickListener { act.push(ProfilePicker(act)) }
         keyed["search"] = search
         keyed["mic"] = mic
@@ -159,22 +169,16 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         mic.id = View.generateViewId()
         gear.id = View.generateViewId()
         avatar.id = View.generateViewId()
-        search.nextFocusRightId = if (Theme.CINEMA) avatar.id else mic.id
-        mic.nextFocusLeftId = search.id
-        mic.nextFocusRightId = avatar.id
-        avatar.nextFocusLeftId = if (Theme.CINEMA) search.id else mic.id
-        avatar.nextFocusRightId = gear.id
-        gear.nextFocusLeftId = avatar.id
-        gear.nextFocusRightId = gear.id
-        search.nextFocusLeftId = search.id
+        linkTopBar()
 
         viewTreeObserver.addOnGlobalFocusChangeListener(ViewTreeObserver.OnGlobalFocusChangeListener { old, now ->
             if (now == null) return@OnGlobalFocusChangeListener
             when {
-                now === search || now === mic || now === gear || now === avatar || now === np -> scrollTo(0f)
+                now === search || now === mic || now === gear || now === avatar || now === np || now === info -> scrollTo(0f)
                 else -> scrollTarget[now]?.let { scrollTo(it) }
             }
             (now.parent as? Strip)?.let { if (it.remember) lastIn[it] = now }
+            idleWatch(now)
             if (!FocusView.quiet && !moving) polish(old, now)
         })
     }
@@ -185,27 +189,55 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     /** Shows Now Playing when something plays or is paused, and links it into the top bar. */
     fun nowPlayingChanged() {
         val show = NowPlaying.showOnHome(act) && NowPlaying.song != null && NowPlaying.state > 0
-        if (!show && np.isFocused) avatar.requestFocus()
+        // Focus moves with the swap, so it never lands on the hidden pill.
+        val hadFocus = np.isFocused || info.isFocused
+        info.covered = show
         np.visibility = if (show) VISIBLE else GONE
-        val left = if (Theme.CINEMA) search else mic
+        if (hadFocus) (if (show) np else if (info.visibility == VISIBLE) info else avatar).requestFocus()
+        linkTopBar()
         if (show) {
-            left.nextFocusRightId = np.id; np.nextFocusLeftId = left.id
-            np.nextFocusRightId = avatar.id; avatar.nextFocusLeftId = np.id
             np.nextFocusDownId = search.nextFocusDownId
             placeNowPlaying()
             np.update()
-        } else {
-            left.nextFocusRightId = avatar.id; avatar.nextFocusLeftId = left.id
+        } else if (info.visibility == VISIBLE) {
+            // The Wi-Fi icon goes back beside the clock.
+            val wl = wifi.layoutParams as LayoutParams
+            wl.leftMargin = info.left - Theme.ipx(48f + 24f)
+            wifi.requestLayout()
         }
     }
 
+    /** Left and right through the top bar: search, mic, Now Playing, weather, profile, settings. Hidden ones drop out. */
+    private fun linkTopBar() {
+        val chain = listOf(search, mic, np, info, avatar, gear).filter { it.visibility == VISIBLE }
+        for ((i, v) in chain.withIndex()) {
+            v.nextFocusLeftId = (chain.getOrNull(i - 1) ?: v).id
+            v.nextFocusRightId = (chain.getOrNull(i + 1) ?: v).id
+        }
+    }
+
+    /**
+     * Now Playing takes the clock and weather pill's place, at its size, like a stacked widget.
+     * It grows left to [NP_MIN] when the pill is narrow, and never reaches under the search pill.
+     */
     private fun placeNowPlaying() {
         if (np.visibility != VISIBLE) return
-        val w = Theme.ipx(np.fitWidth())
-        val right = if (wifi.visibility == VISIBLE && wifi.alpha > 0f) (wifi.layoutParams as LayoutParams).leftMargin - Theme.ipx(16f)
-            else info.left - Theme.ipx(20f)
+        val right: Int
+        var w: Int
+        if (info.visibility != GONE && info.width > 0) {
+            right = info.right
+            w = maxOf(info.width, Theme.ipx(NP_MIN))
+        } else {
+            right = width - Theme.ipx(EDGE + 88f + 24f + 88f + 24f)
+            w = Theme.ipx(np.fitWidth())
+        }
+        w = minOf(w, right - Theme.ipx(EDGE + 760f + 24f))
         val lp = np.layoutParams as LayoutParams
         if (lp.width != w || lp.leftMargin != right - w) { lp.width = w; lp.leftMargin = right - w; np.requestLayout() }
+        // The Wi-Fi icon follows to the left of whichever pill shows.
+        val wl = wifi.layoutParams as LayoutParams
+        val x = right - w - Theme.ipx(48f + 24f)
+        if (wl.leftMargin != x) { wl.leftMargin = x; wifi.requestLayout() }
     }
 
     // ---------------------------------------------------------------- data events
@@ -220,7 +252,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     fun appsChanged() { if (appsSignature() != appsSig) rebuild() }
     fun continueChanged() { if (contSignature() != contSig) rebuild() }
 
-    fun weatherChanged() = info.apply(act.cfg, act.weather)
+    fun weatherChanged() { info.apply(act.cfg, act.weather); linkTopBar() }
 
     /** Updates the Wi-Fi icon, and redraws the parts that depend on the network when [rebuild] is set. */
     fun networkChanged(online: Boolean, link: Boolean, rebuild: Boolean) {
@@ -264,8 +296,8 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val cfg = act.cfg
         var y: Float
         val pinnedTarget: Float
-        // The spotlight needs a Stremio library. Signed out, a sign-in card takes its place.
-        val hero = cfg.spotlight && Stremio.signedIn(act)
+        // The spotlight needs a library to watch from. Signed out, a sign-in card takes its place.
+        val hero = act.spotlightOn && Watch.signedIn(act)
         if (hero) {
             buildSpotlight()
             y = 780f
@@ -275,13 +307,15 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             pinnedTarget = -(y - 220f)
         } else {
             art(null)
-            y = if (cfg.spotlight) buildConnect(190f) + 64f else 220f
+            y = if (act.spotlightOn) buildConnect(190f) + 64f else 220f
             pinnedTarget = 0f
         }
         pinTiles.clear()
         val rowsTop = y
         pageTop = pinnedTarget
-        if (cfg.showPinned) y = buildPinned(y, pinnedTarget)
+        // Library rows lead the page, so the rows after them scroll further.
+        y = buildLibrary(y, pinnedTarget, rowsTop)
+        if (cfg.showPinned) y = buildPinned(y, pinnedTarget - (y - rowsTop))
         if (cfg.showRecent) {
             // A second row scrolls further, so it sits where the first one would.
             val below = cfg.showPinned
@@ -311,13 +345,16 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private fun buildConnect(y: Float): Float {
         val h = 420f
         content.place(ConnectCard(act), EDGE, y, Theme.W - EDGE * 2, h)
-        content.place(act.label("Bring your Stremio library home", 52f, Theme.TEXT, Theme.BOLD), EDGE + 64f, y + 60f, 1100f, 70f)
-        content.place(act.label("Sign in with your phone to see Continue watching, new episodes and a full-screen spotlight for what you're watching.",
+        // After Stremio ends the session, the card says what happened instead of starting over.
+        val lost = Watch.signedOutByApp(act)
+        content.place(act.label(if (lost) "Stremio signed Scene out" else "Bring your Stremio library home", 52f, Theme.TEXT, Theme.BOLD), EDGE + 64f, y + 60f, 1100f, 70f)
+        content.place(act.label(if (lost) "This happens after a password change or signing out everywhere. Sign in again with your phone and everything comes back."
+            else "Sign in with your phone to see Continue watching, new episodes and a full-screen spotlight for what you're watching.",
             28f, Theme.TEXT_DIM, Theme.REGULAR, 2), EDGE + 64f, y + 146f, 980f, 84f)
         val row = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false }
         val installed = Apps.isInstalled(act.packageManager, Config.STREMIO)
         val actions = listOfNotNull(
-            Btn("Sign in", R.drawable.ic_qr_code_2) { act.openSignIn() },
+            Btn(if (lost) "Sign in again" else "Sign in", R.drawable.ic_qr_code_2) { act.openSignIn() },
             if (!installed) Btn("Get Stremio", R.drawable.ic_shop) { act.installStremio() } else null,
             Btn("Hide", R.drawable.ic_visibility_off) { act.cfg.spotlight = false; act.save(); rebuild() },
         )
@@ -393,7 +430,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         buttonHint.alpha = 0f
         for ((i, b) in list.withIndex()) {
             val pb = PillButton(act, if (b.round) "" else b.label, b.icon, i == 0)
-            if (Theme.CINEMA) { pb.bare = true; pb.ringless = true }
+            if (Theme.CINEMA) pb.bare = true
             pb.contentDescription = b.label
             // Keyed by icon.
             val key = "btn:${b.key}"
@@ -416,6 +453,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         np.nextFocusDownId = search.nextFocusDownId
         gear.nextFocusDownId = search.nextFocusDownId
         avatar.nextFocusDownId = search.nextFocusDownId
+        info.nextFocusDownId = search.nextFocusDownId
     }
 
     /** Names a round button under it while it has focus. */
@@ -438,9 +476,12 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val items = act.continueItems
         val header = rowHeader("Continue watching")
         content.place(header, EDGE, y, -1f, 44f)
-        // Slightly smaller than full 16:9 width.
-        val strip = Strip(act, 352f, 28f).apply { remember = false }
-        content.place(strip, EDGE, y + 58f, Theme.W - EDGE, 198f)
+        // About 352 wide, sized so whole cards end at the right margin and the next one peeks in clearly.
+        val gap = 28f
+        val n = Math.round((Theme.W - EDGE * 2 + gap) / (352f + gap)).coerceAtLeast(2)
+        val cw = (Theme.W - EDGE * 2 - (n - 1) * gap) / n
+        val strip = Strip(act, cw, gap).apply { remember = false }
+        content.place(strip, EDGE, y + 58f, Theme.W - EDGE, 198f * cw / 352f)
         if (items.isEmpty()) {
             val card = ArtCard(act).also { it.cinema = Theme.CINEMA }.apply {
                 when {
@@ -448,7 +489,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
                         title = "No connection"; subtitle = "Your progress shows when you're back online"; iconRes = R.drawable.ic_wifi
                         setOnClickListener { act.openSystemSettings(android.provider.Settings.ACTION_WIFI_SETTINGS) }
                     }
-                    !Stremio.signedIn(act) -> {
+                    Watch.signedOutByApp(act) -> {
+                        title = "${Watch.name(act)} signed Scene out"; subtitle = "Press OK to sign in again"; iconRes = R.drawable.ic_account_circle
+                        setOnClickListener { if (Watch.isStremio(act)) act.openSignIn() else WatchSignIn.start(act, Watch.source(act)) }
+                    }
+                    !Watch.signedIn(act) -> {
                         title = "Sign in to Stremio"; subtitle = "Your progress shows up here"; iconRes = R.drawable.ic_account_circle
                         setOnClickListener { act.openSignIn() }
                     }
@@ -456,12 +501,12 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
                         title = ""; subtitle = ""; loading = true
                     }
                     act.continueError -> {
-                        title = "Couldn't reach Stremio"; subtitle = "Press OK to try again"; iconRes = R.drawable.ic_refresh
+                        title = "Couldn't reach ${Watch.name(act)}"; subtitle = "Press OK to try again"; iconRes = R.drawable.ic_refresh
                         setOnClickListener { act.refreshContinue(force = true) }
                     }
                     else -> {
-                        title = "Nothing in progress"; subtitle = "Start something in Stremio"; iconRes = R.drawable.ic_movie
-                        setOnClickListener { act.launch(Config.STREMIO) }
+                        title = "Nothing in progress"; subtitle = "Start something in ${Watch.name(act)}"; iconRes = R.drawable.ic_movie
+                        setOnClickListener { act.launch(Watch.source(act).pkg) }
                     }
                 }
                 focusKey = "cw:empty"
@@ -513,11 +558,13 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private fun loadCardArt(card: ArtCard, item: CwItem) {
         card.loading = true
         val apply = { m: Meta? ->
-            val url = m?.background ?: item.poster
+            // Jellyfin and Plex give the episode's own still, as their apps show.
+            val url = item.still ?: m?.background ?: item.poster
             Images.load(url, Theme.ipx(400f)) { b -> if (cards.contains(card)) { card.loading = false; card.art = b } }
         }
-        val cached = Stremio.cachedMeta(item.id)
-        if (cached != null) apply(cached) else Net.first({ Stremio.meta(act, item.type, item.id) }) { apply(it) }
+        val cached = Watch.cachedMeta(item.id)
+        if (item.still != null) apply(cached)
+        else if (cached != null) apply(cached) else Net.first({ Watch.meta(act, item.type, item.id) }) { apply(it) }
     }
 
     private fun subtitleFor(item: CwItem): String {
@@ -574,6 +621,48 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         return y + 72f + TILE_H
     }
 
+    /** The Watch With app's library rows, each ending in a See all card. Returns where the next row starts. */
+    private fun buildLibrary(start: Float, target: Float, rowsTop: Float): Float {
+        var y = start
+        for (shelf in Library.shown(act)) {
+            val list = Library.cached(shelf.key)
+            if (list == null) Library.load(act, shelf.key) { rebuild() }
+            // Still empty after a few tries: the row leaves Home.
+            if (list != null && list.isEmpty()) continue
+            content.place(rowHeader(shelf.title), EDGE, y, -1f, 44f)
+            val strip = Strip(act, 200f, 28f)
+            content.place(strip, EDGE, y + 72f, Theme.W - EDGE, 300f)
+            val rowTarget = target - (y - rowsTop)
+            fun keep(v: FocusView, key: String) {
+                v.focusKey = key
+                keyed[key] = v
+                keyed.putIfAbsent("pin:0", v)
+                scrollTarget[v] = rowTarget
+                strip.add(v)
+            }
+            if (list == null) {
+                for (i in 0 until 6) keep(PosterCard(act).apply { loading = true }, "lib:${shelf.key}:$i")
+            } else {
+                // The row shows 15; the titles after them fill the See all collage.
+                for ((i, h) in list.take(ROW_TITLES).withIndex()) keep(PosterCard(act).apply {
+                    Library.bind(this, h)
+                    contentDescription = h.name
+                    setOnClickListener { act.openDetail(h.type, h.id) }
+                    setOnLongClickListener { Library.menu(act, h); true }
+                }, "lib:${shelf.key}:$i")
+                val tab = Watch.tabs(act).indexOfFirst { it.key == shelf.key }.coerceAtLeast(0)
+                keep(SeeAllCard(act).apply {
+                    line = shelf.title
+                    contentDescription = "See all, ${shelf.title}"
+                    posters(list.drop(ROW_TITLES).ifEmpty { list })
+                    setOnClickListener { act.push(LibraryScreen(act, tab)) }
+                }, "lib:${shelf.key}:all")
+            }
+            y += 72f + 300f + 56f
+        }
+        return y
+    }
+
     /** Apps last opened from Scene, newest first. Empty shows one line instead of tiles. */
     private fun buildRecent(y: Float, target: Float): Float {
         val list = act.recentApps()
@@ -621,30 +710,60 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         }
         for ((ri, r) in act.cfg.rows.withIndex()) {
             val list = act.rowApps(r)
+            // A ready-made row with no apps of its kind stays off Home.
+            if (list.isEmpty() && r.auto.isNotEmpty()) continue
             y += 56f
-            val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.BOTTOM }
-            head.addView(rowHeader(r.name), LinearLayout.LayoutParams(-2, -1))
-            if (r.sort != 0) head.addView(act.label(RowSort.NAMES[r.sort], 24f, Theme.TEXT_DIM, Theme.MEDIUM).apply {
-                gravity = android.view.Gravity.BOTTOM
-                setPadding(Theme.ipx(16f), 0, 0, Theme.ipx(2f))
-            }, LinearLayout.LayoutParams(-2, -1))
+            // The sort name sits on the row name's text line.
+            val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = true }
+            head.addView(rowHeader(r.name), LinearLayout.LayoutParams(-2, -2))
+            if (r.sort != 0) head.addView(act.label(RowSort.NAMES[r.sort], 24f, Theme.TEXT_DIM, Theme.MEDIUM),
+                LinearLayout.LayoutParams(-2, -2).apply { leftMargin = Theme.ipx(16f) })
             content.place(head, EDGE, y, -1f, 44f)
             val rowTarget = target - (y - rowsTop)
+            // An empty row of your own offers an add tile, like Pin app.
             if (list.isEmpty()) {
-                content.place(act.label("Hold OK on an app and choose Add to Row.", 28f, Theme.TEXT_DIM), EDGE, y + 64f, 1200f, 40f)
-                y += 64f + 40f
+                val add = AppTile(act).also { it.cinema = Theme.CINEMA }.apply {
+                    label = "Add app"
+                    glyph = R.drawable.ic_add
+                    dashed = true
+                    focusKey = "row$ri:add"
+                    setOnClickListener {
+                        act.push(AppPicker(act, "Add to ${r.name}", "Choose an app for this row") { e ->
+                            if (e.pkg !in r.apps) r.apps.add(e.pkg)
+                            act.save(); rebuild()
+                        })
+                    }
+                }
+                content.place(add, EDGE, y + 72f, TILE, TILE_H)
+                keyed["row$ri:add"] = add
+                keyed.putIfAbsent("pin:0", add)
+                scrollTarget[add] = rowTarget
+                y += 72f + TILE_H
                 continue
             }
-            val strip = Strip(act, TILE, TILE_GAP)
-            content.place(strip, EDGE, y + 72f, Theme.W - EDGE, TILE_H)
-            for (pkg in list) {
+            // Rows wrap onto more lines like All apps, up to two lines; longer rows end in See all.
+            val shown = capped(list)
+            for ((i, pkg) in shown.withIndex()) {
+                val line = i / GRID_COLS
                 val tile = AppTile(act).also { it.cinema = Theme.CINEMA }
                 bindApp(tile, pkg, false, "row$ri:")
-                strip.add(tile)
+                content.place(tile, EDGE + (i % GRID_COLS) * (TILE + TILE_GAP), y + 72f + line * (TILE_H + 40f), TILE, TILE_H)
                 keyed.putIfAbsent("pin:0", tile)
-                scrollTarget[tile] = rowTarget
+                scrollTarget[tile] = rowTarget - line * (TILE_H + 40f)
             }
-            y += 72f + TILE_H
+            if (shown.size < list.size) {
+                val i = shown.size
+                val line = i / GRID_COLS
+                val more = seeAll(list, shown.size, "row$ri:all") {
+                    val icon = AppCategory.KINDS.firstOrNull { it.key == r.auto }?.icon ?: R.drawable.ic_view_agenda
+                    act.push(AppGridScreen(act, r.name, icon, false, ri, { act.rowApps(act.cfg.rows.getOrNull(ri) ?: r) },
+                        { "${appCount(act.rowApps(act.cfg.rows.getOrNull(ri) ?: r).size)}  ·  ${RowSort.NAMES[r.sort]}" }))
+                }
+                content.place(more, EDGE + (i % GRID_COLS) * (TILE + TILE_GAP), y + 72f + line * (TILE_H + 40f), TILE, TILE_H)
+                scrollTarget[more] = rowTarget - line * (TILE_H + 40f)
+            }
+            val lines = (shown.size + (if (shown.size < list.size) 1 else 0) + GRID_COLS - 1) / GRID_COLS
+            y += 72f + lines * (TILE_H + 40f) - 40f
         }
         return y
     }
@@ -664,13 +783,16 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         // Sits on the header's text line, a short gap after it.
         sort.post {
             sort.translationY = (header.top + header.baseline - sort.top - sort.baseline).toFloat()
-            sort.translationX = header.right + Theme.px(28f) - Theme.px(22f) - sort.left
+            // A clear gap after the header, so the focused pill and its ring never cover "All apps".
+            sort.translationX = header.right + Theme.px(24f) - sort.left
         }
         keyed["sort"] = sort
         scrollTarget[sort] = -(y + 72f - 600f)
         gridTiles.clear()
         gridPkgs.clear()
-        for ((i, e) in list.withIndex()) {
+        // Two lines and See all, except while moving an app, when every app has to be in reach.
+        val shown = if (allOpen) list else list.take(capped(list.map { it.pkg }).size)
+        for ((i, e) in shown.withIndex()) {
             val row = i / GRID_COLS
             val col = i % GRID_COLS
             val ty = y + 72f + row * (TILE_H + 40f)
@@ -682,7 +804,39 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             if (i == 0) keyed["grid:0"] = tile
             scrollTarget[tile] = -(ty - 600f)
         }
+        if (shown.size < list.size) {
+            val i = shown.size
+            val ty = y + 72f + (i / GRID_COLS) * (TILE_H + 40f)
+            val more = seeAll(list.map { it.pkg }, shown.size, "grid:all") {
+                act.push(AppGridScreen(act, "All apps", R.drawable.ic_apps, true, -1, { act.sortedApps().map { it.pkg } },
+                    { appCount(act.sortedApps().size) }))
+            }
+            content.place(more, EDGE + (i % GRID_COLS) * (TILE + TILE_GAP), ty, TILE, TILE_H)
+            scrollTarget[more] = -(ty - 600f)
+        }
     }
+
+    /** A quiet dot on the settings button while an update waits that the user hasn't skipped. */
+    fun updateBadge() { gear.badge = Updates.shouldNotify(act) }
+
+    /** The apps a Home row shows: all of them up to two lines, or one less to leave room for See all. */
+    private fun capped(list: List<String>): List<String> {
+        val max = GRID_COLS * 2
+        return if (list.size <= max) list else list.take(max - 1)
+    }
+
+    /** The tile after a capped row: the next four apps in small, and how many more there are. */
+    private fun seeAll(list: List<String>, from: Int, key: String, open: () -> Unit) = AppTile(act).also { it.cinema = Theme.CINEMA }.apply {
+        stack = list.drop(from).take(4).map { act.app(it)?.icon }
+        label = "See all ${list.size}"
+        focusKey = key
+        contentDescription = "See all ${list.size} apps"
+        setOnClickListener { open() }
+        keyed[key] = this
+    }
+
+    /** All apps shows every app while one is being moved. */
+    private var allOpen = false
 
     // ---------------------------------------------------------------- move mode
 
@@ -734,10 +888,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         undoSort = act.cfg.appSort
         undoOrder = ArrayList(act.cfg.appOrder)
         if (grid && act.cfg.appSort != 2) {
-            act.cfg.appOrder = ArrayList(gridPkgs)
+            act.cfg.appOrder = ArrayList(act.sortedApps().map { it.pkg })
             act.cfg.appSort = 2
-            rebuild("grid:$pkg")
         }
+        if (grid && !allOpen) { allOpen = true; rebuild("grid:$pkg") }
+        if (grid) undoGrid = ArrayList(gridPkgs)
         val i = if (grid) gridPkgs.indexOf(pkg) else act.cfg.pinned.indexOfFirst { it.pkg == pkg }
         val tiles = if (grid) gridTiles else pinTiles
         val tile = tiles.getOrNull(i) ?: return
@@ -778,12 +933,15 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         for (t in moveTiles()) Motion.stop(t)
         moveTiles().getOrNull(moveIndex)?.let { lift(it, false) }
         moveIndex = -1
+        allOpen = false
         act.cfg.pinned = ArrayList(undoPins)
         act.cfg.appSort = undoSort
         act.cfg.appOrder = ArrayList(undoOrder)
         act.save()
         moveHint.animate().alpha(0f).setDuration(Theme.FOCUS_MS).start()
-        rebuild(pkg?.let { (if (grid) "grid:" else "pin:") + it })
+        // An app past the first two lines is back behind See all, so focus goes there.
+        val back = if (grid && pkg != null && pkg !in capped(act.sortedApps().map { it.pkg })) "grid:all" else pkg?.let { (if (grid) "grid:" else "pin:") + it }
+        rebuild(back)
         act.toast("Move cancelled")
     }
 
@@ -804,6 +962,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         postDelayed({ for (o in others) Motion.stop(o) }, 300)
         if (moveGrid) act.cfg.appOrder = ArrayList(gridPkgs)
         moveIndex = -1
+        allOpen = false
         act.save()
         moveHint.animate().alpha(0f).setDuration(Theme.FOCUS_MS).start()
     }
@@ -917,6 +1076,28 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     // ---------------------------------------------------------------- spotlight
 
+    private val idleStart = Runnable { backdrop.idle(true) }
+
+    /** Any move settles the art; resting on a Continue watching card or spotlight button starts the drift. */
+    private fun idleWatch(now: View?) {
+        removeCallbacks(idleStart)
+        backdrop.idle(false)
+        val rest = if (isInTouchMode) cards.isNotEmpty() && scroll == 0f else now != null && (now in cards || now.parent === buttons)
+        if (Theme.moves && rest) postDelayed(idleStart, IDLE_MS)
+    }
+
+    /** Starts the wait for the art to drift again, for example when Home comes back into view. */
+    fun armIdle() = idleWatch(findFocus())
+
+    /** Touch has no focus to rest on: the art drifts once Home is left alone at the top. */
+    override fun dispatchTouchEvent(e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> { removeCallbacks(idleStart); backdrop.idle(false) }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> postDelayed({ idleWatch(findFocus()) }, Theme.MEDIUM_MS)
+        }
+        return super.dispatchTouchEvent(e)
+    }
+
     private fun select(index: Int, immediate: Boolean = false) {
         selected = index
         pendingSelect?.let { removeCallbacks(it) }
@@ -948,10 +1129,10 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             item.isNew -> newText(item)
             else -> "Up next"
         }
-        val meta = Stremio.cachedMeta(item.id)
+        val meta = Watch.cachedMeta(item.id)
         fillMeta(item, meta)
         if (meta == null) {
-            Net.first({ Stremio.meta(act, item.type, item.id) }) { m ->
+            Net.first({ Watch.meta(act, item.type, item.id) }) { m ->
                 if (selected != index || act.continueItems.getOrNull(index) !== item) return@first
                 if (m != null) fillMeta(item, m) else loadingLines.visibility = GONE
             }
@@ -996,19 +1177,22 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         // Main actions get labels; the rest are round icon buttons that name themselves on focus.
         val list = ArrayList<Btn>()
         val series = item.type == "series"
-        // Without the Stremio app nothing can play, so the main action installs it.
-        val hasStremio = Apps.isInstalled(act.packageManager, Config.STREMIO)
-        if (hasStremio) list.add(Btn(if (item.started) "Resume" else "Play", R.drawable.ic_play_arrow) { act.openDetail(item.type, item.id, item.videoId) })
-        else list.add(Btn("Get Stremio", R.drawable.ic_shop) { act.installStremio() })
-        val next = meta?.let { Stremio.nextVideo(it, item) }
-        if (hasStremio && next != null && item.started) list.add(Btn("Next episode", R.drawable.ic_skip_next) { act.openDetail(item.type, item.id, next.id) })
+        // Without the app nothing can play, so the main action installs it.
+        val src = Watch.source(act)
+        val stremio = src == Source.STREMIO
+        val hasApp = Watch.appInstalled(act)
+        if (hasApp) list.add(Btn(if (item.started) "Resume" else "Play", R.drawable.ic_play_arrow) { act.openDetail(item.type, item.id, item.videoId) })
+        else list.add(Btn("Get ${src.label}", R.drawable.ic_shop) { act.installApp(src) })
+        val next = meta?.let { Watch.nextVideo(it, item) }
+        if (hasApp && next != null && item.started) list.add(Btn("Next episode", R.drawable.ic_skip_next) { act.openDetail(item.type, item.id, next.id) })
         list.add(Btn(if (series) "Episodes" else "Details", if (series) R.drawable.ic_list else R.drawable.ic_info, true) { act.openDetail(item.type, item.id) })
-        if (hasStremio) meta?.trailer?.let { yt -> list.add(Btn("Trailer", R.drawable.ic_movie, true) { act.openTrailer(yt, item.name) }) }
-        if (Stremio.signedIn(act)) {
+        if (hasApp && stremio) meta?.trailer?.let { yt -> list.add(Btn("Trailer", R.drawable.ic_movie, true) { act.openTrailer(yt, item.name) }) }
+        if (Watch.signedIn(act)) {
             list.add(Btn(if (series) "Mark episode watched" else "Mark watched", R.drawable.ic_check_circle, true) { act.markWatched(item) })
-            list.add(if (item.inLibrary) Btn("Remove from library", R.drawable.ic_bookmark_added, true, "lib") { act.setInLibrary(item, false) }
-                else Btn("Add to library", R.drawable.ic_bookmark_add, true, "lib") { act.setInLibrary(item, true) })
-            if (series && item.inLibrary) {
+            val words = Watch.libraryWords(act)
+            if (Watch.hasLibrary(act)) list.add(if (item.inLibrary) Btn(words.second, R.drawable.ic_bookmark_added, true, "lib") { act.setInLibrary(item, false) }
+                else Btn(words.first, R.drawable.ic_bookmark_add, true, "lib") { act.setInLibrary(item, true) })
+            if (stremio && series && item.inLibrary) {
                 list.add(if (item.notify) Btn("Stop new episode alerts", R.drawable.ic_notifications_active, true, "notify") { act.setNotify(item, false) }
                     else Btn("Get new episode alerts", R.drawable.ic_notifications_off, true, "notify") { act.setNotify(item, true) })
             }
@@ -1020,14 +1204,14 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         buildButtons(list)
         if (focusedKey?.startsWith("btn:") == true && findFocus() !== keyed[focusedKey]) keyed[focusedKey]?.focusQuietly()
         select2Focus()
-        val url = meta?.background ?: item.poster
+        val url = meta?.background ?: item.still ?: item.poster
         if (url != null) {
             // Show the card's smaller copy at once, then swap in the full backdrop when it is ready.
             val full = Images.cached(url, Theme.ipx(1280f))
             if (full != null) setBackdrop(full)
             else {
                 cards.getOrNull(selected)?.art?.let { setBackdrop(it) }
-                Images.load(url, Theme.ipx(1280f)) { b -> if (b != null && act.continueItems.getOrNull(selected) === item) setBackdrop(b) }
+                Images.load(url, Theme.ipx(1280f), exact = false) { b -> if (b != null && act.continueItems.getOrNull(selected) === item) setBackdrop(b) }
             }
             prefetchBackdrop(selected + 1)
         }
@@ -1036,8 +1220,8 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     /** Decodes the next title's backdrop ahead of time. */
     private fun prefetchBackdrop(index: Int) {
         val item = act.continueItems.getOrNull(index) ?: return
-        val url = Stremio.cachedMeta(item.id)?.background ?: return
-        if (Images.cached(url, Theme.ipx(1280f)) == null) Images.load(url, Theme.ipx(1280f)) { }
+        val url = Watch.cachedMeta(item.id)?.background ?: return
+        if (Images.cached(url, Theme.ipx(1280f)) == null) Images.load(url, Theme.ipx(1280f), exact = false) { }
     }
 
     private fun newText(item: CwItem) = if (item.newCount == 1) "1 new episode" else "${item.newCount} new episodes"
@@ -1063,20 +1247,22 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         chips.visibility = VISIBLE
         synopsis.visibility = VISIBLE
         val list = ArrayList<Btn>()
-        if (!act.online && Stremio.signedIn(act)) {
+        val app = Watch.name(act)
+        val pkg = Watch.source(act).pkg
+        if (!act.online && Watch.signedIn(act)) {
             title.text = "You're offline"
             synopsis.text = "Connect to Wi-Fi to see what's next. Your apps below still work."
             list.add(Btn("Wi-Fi settings", R.drawable.ic_wifi) { act.openSystemSettings(android.provider.Settings.ACTION_WIFI_SETTINGS) })
-            list.add(Btn("Open Stremio", R.drawable.ic_play_arrow) { act.launch(Config.STREMIO) })
-        } else if (!Stremio.signedIn(act)) {
+            list.add(Btn("Open $app", R.drawable.ic_play_arrow) { act.launch(pkg) })
+        } else if (!Watch.signedIn(act)) {
             title.text = "Pick up where you left off"
             synopsis.text = "Sign in with your phone to see your shows and films here, with one press to resume."
             list.add(Btn("Sign in", R.drawable.ic_qr_code_2) { act.openSignIn() })
             list.add(Btn("Open Stremio", R.drawable.ic_play_arrow) { act.launch(Config.STREMIO) })
         } else {
             title.text = if (act.continueLoading) "Loading your library" else "Nothing in progress"
-            synopsis.text = "Anything you start in Stremio appears here, ready to resume."
-            list.add(Btn("Open Stremio", R.drawable.ic_play_arrow) { act.launch(Config.STREMIO) })
+            synopsis.text = "Anything you start in $app appears here, ready to resume."
+            list.add(Btn("Open $app", R.drawable.ic_play_arrow) { act.launch(pkg) })
         }
         buildButtons(list)
         select2Focus()
@@ -1280,6 +1466,12 @@ class Strip(ctx: Context, private val itemW: Float, private val gap: Float, priv
         if (child != null) scrollToIndex(indexOfChild(child))
     }
 
+    /** Right on the last item stays put, so focus never jumps to the top bar. */
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        if (direction == FOCUS_RIGHT && focused != null && childCount > 0 && indexOfChild(focused) == childCount - 1) return focused
+        return super.focusSearch(focused, direction)
+    }
+
     private fun scrollToIndex(i: Int) {
         val pitch = itemW + gap
         val total = count * pitch - gap
@@ -1298,6 +1490,13 @@ class Strip(ctx: Context, private val itemW: Float, private val gap: Float, priv
     private var tracker: android.view.VelocityTracker? = null
 
     private fun minX() = -Theme.px((count * (itemW + gap) - gap - viewport).coerceAtLeast(0f))
+
+    /** Tells the row which item a swipe brings to the left edge, so art loads without focus moving. */
+    private var lastShown = -1
+    private fun shownFrom(x: Float) {
+        val i = (-x / Theme.px(itemW + gap)).toInt().coerceAtLeast(0)
+        if (i != lastShown) { lastShown = i; onIndex?.invoke(i) }
+    }
 
     private fun startDrag(e: android.view.MotionEvent) {
         dragging = true
@@ -1327,6 +1526,7 @@ class Strip(ctx: Context, private val itemW: Float, private val gap: Float, priv
                 if (!dragging) { if (kotlin.math.abs(e.rawX - touchX) > slop) startDrag(e) else return true }
                 tracker?.addMovement(e)
                 translationX = (dragFrom + e.rawX - touchX).coerceIn(minX(), 0f)
+                shownFrom(translationX)
             }
             android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
                 if (dragging) {
@@ -1334,6 +1534,7 @@ class Strip(ctx: Context, private val itemW: Float, private val gap: Float, priv
                     t?.addMovement(e); t?.computeCurrentVelocity(1000)
                     val end = (translationX + (t?.xVelocity ?: 0f) * 0.25f).coerceIn(minX(), 0f)
                     animate().translationX(end).setDuration(420L).setInterpolator(Theme.EASE).start()
+                    shownFrom(end)
                 }
                 tracker?.recycle(); tracker = null
                 dragging = false
@@ -1361,11 +1562,11 @@ class Backdrop(ctx: Context) : View(ctx) {
     private var tint = Theme.accent
     private var tintAnim: ValueAnimator? = null
     private val tintP = Paint(Paint.DITHER_FLAG)
-    /** Slow zoom and pan of the art, 0 to 1 and back, at full motion. */
+    /** Zoom and pan of the art while Home sits idle on a title, 0 to 1 and back, at full motion. */
     private var drift = 0f
     private var driftAnim: ValueAnimator? = null
 
-    private companion object { const val TINT_MS = 1200L; const val DRIFT_MS = 48_000L }
+    private companion object { const val TINT_MS = 1200L; const val DRIFT_MS = 18_000L; const val SETTLE_MS = 700L }
 
     private fun tintTo(c: Int) {
         tintAnim?.cancel()
@@ -1379,24 +1580,37 @@ class Backdrop(ctx: Context) : View(ctx) {
         }
     }
 
-    private fun startDrift() {
-        if (driftAnim != null || !Theme.moves || !isAttachedToWindow) return
-        driftAnim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = DRIFT_MS
-            repeatCount = ValueAnimator.INFINITE
-            repeatMode = ValueAnimator.REVERSE
-            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
-            addUpdateListener { drift = it.animatedValue as Float; if (current != null) invalidate() }
-            start()
-        }
+    /**
+     * Starts the slow zoom and pan once Home has sat on one title for a while, or eases the art
+     * back when anything moves. Only at full motion.
+     */
+    fun idle(on: Boolean) {
+        if (on && (!Theme.moves || !isAttachedToWindow || current == null || driftAnim != null)) return
+        if (!on && driftAnim == null && drift == 0f) return
+        driftAnim?.cancel()
+        driftAnim = null
+        if (on) {
+            driftAnim = ValueAnimator.ofFloat(drift, 1f).apply {
+                duration = DRIFT_MS
+                repeatCount = ValueAnimator.INFINITE
+                repeatMode = ValueAnimator.REVERSE
+                interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                addUpdateListener { drift = it.animatedValue as Float; invalidate() }
+                start()
+            }
+        } else if (Theme.moves && drift > 0f) {
+            ValueAnimator.ofFloat(drift, 0f).apply {
+                duration = SETTLE_MS
+                interpolator = Theme.EASE
+                addUpdateListener { if (driftAnim == null) { drift = it.animatedValue as Float; invalidate() } }
+                start()
+            }
+        } else { drift = 0f; invalidate() }
     }
 
-    private fun stopDrift() { driftAnim?.cancel(); driftAnim = null; drift = 0f }
-
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); startDrift() }
     // Rests while Home is hidden behind another app.
-    override fun onWindowVisibilityChanged(v: Int) { super.onWindowVisibilityChanged(v); if (v == VISIBLE) startDrift() else stopDrift() }
-    override fun onDetachedFromWindow() { stopDrift(); tintAnim?.cancel(); super.onDetachedFromWindow() }
+    override fun onWindowVisibilityChanged(v: Int) { super.onWindowVisibilityChanged(v); if (v != VISIBLE) idle(false) }
+    override fun onDetachedFromWindow() { idle(false); tintAnim?.cancel(); super.onDetachedFromWindow() }
 
     fun set(b: Bitmap?) {
         if (b === current) return
@@ -1485,11 +1699,11 @@ class Backdrop(ctx: Context) : View(ctx) {
             val sh = (b.width / target).toInt()
             src.set(0, 0, b.width, sh)
         }
-        // Drift: 104% to 110%, panning from the centre towards the left. Off when [p] is the still paint.
-        val k = if (p === still || !Theme.moves) 1f else 1.04f + 0.06f * drift
+        // Idle drift: 100% to 112%, panning from the centre towards the left. Off when [p] is the still paint.
+        val k = if (p === still || !Theme.moves) 1f else 1f + 0.12f * drift
         val dw = w * k
         val dh = heroH * k
-        val fx = if (p === still) 0.5f else 0.5f - 0.12f * drift
+        val fx = if (p === still) 0.5f else 0.5f - 0.3f * drift
         val left = -(dw - w) * fx
         dst.set(left, 0f, left + dw, dh)
         p.alpha = (alpha * 255).toInt()
@@ -1526,7 +1740,7 @@ class Backdrop(ctx: Context) : View(ctx) {
 
     fun themeChanged() {
         if (current == null) tint = Theme.accent
-        if (Theme.moves) startDrift() else stopDrift()
+        if (!Theme.moves) idle(false)
         updateShaders()
         invalidate()
         feedGlass()

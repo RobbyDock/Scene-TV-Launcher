@@ -15,8 +15,50 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Sample song for the Settings preview when nothing is playing. */
-private val SAMPLE = NowPlaying.Song("", "Music", "Song title", "Artist", "Album", null, 240_000L)
+/** Real songs with their covers, shipped with Scene, for the Settings preview when nothing is playing. */
+object SampleSongs {
+    private class Entry(val title: String, val artist: String, val album: String, val ms: Long) {
+        /** Cover address from the iTunes search, kept once found. */
+        var cover: String? = null
+    }
+
+    private val list = listOf(
+        Entry("Midnight City", "M83", "Hurry Up, We're Dreaming", 243_960L),
+        Entry("Get Lucky", "Daft Punk", "Random Access Memories", 369_629L),
+        Entry("Dreams", "Fleetwood Mac", "Rumours", 257_800L),
+        Entry("Electric Feel", "MGMT", "Oracular Spectacular", 229_640L),
+        Entry("Heat Waves", "Glass Animals", "Dreamland", 238_805L),
+        Entry("Redbone", "Childish Gambino", "\"Awaken, My Love!\"", 379_227L),
+        Entry("Mr. Brightside", "The Killers", "Hot Fuss", 222_973L),
+    )
+    private var last = -1
+
+    /**
+     * A different song from the last one picked. The cover is not shipped with the app: it is
+     * looked up online, and [artReady] runs when it arrives. Offline, the song keeps the plain
+     * gradient cover.
+     */
+    fun pick(artReady: (NowPlaying.Song) -> Unit): NowPlaying.Song {
+        var i: Int
+        do i = (list.indices).random() while (i == last && list.size > 1)
+        last = i
+        val e = list[i]
+        val song = NowPlaying.Song("", "Sample", e.title, e.artist, e.album, null, e.ms)
+        val show = { url: String ->
+            Images.load(url, Theme.ipx(320f)) { b -> if (b != null) { song.art = b; artReady(song) } }
+        }
+        val known = e.cover
+        if (known != null) show(known)
+        else Net.run({ coverUrl(e) }) { url -> if (url != null) { e.cover = url; show(url) } }
+        return song
+    }
+
+    private fun coverUrl(e: Entry): String? {
+        val term = java.net.URLEncoder.encode("${e.title} ${e.artist}", "UTF-8")
+        val r = Net.getJson("https://itunes.apple.com/search?entity=song&limit=1&term=$term").optJSONArray("results")?.optJSONObject(0)
+        return r?.optString("artworkUrl100")?.takeIf { it.isNotEmpty() }?.replace("100x100bb", "320x320bb")
+    }
+}
 
 /**
  * Music screensaver: blurred cover behind, the cover and song on the left, synced lyrics on the
@@ -60,6 +102,9 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
     private var lyricAt = 0L
     private val lyricP = p(40f, 1f, Theme.SEMIBOLD)
     private val born = android.os.SystemClock.uptimeMillis()
+    /** Shown in the Settings preview while nothing plays. Declared before init, which reads it. */
+    private val sample: NowPlaying.Song by lazy { SampleSongs.pick { if (song() === it) post { refresh() } } }
+    private val sampleAt = System.currentTimeMillis()
 
     init { if (!compact) setBackgroundColor(Color.BLACK); refresh() }
 
@@ -78,30 +123,59 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         super.onDetachedFromWindow()
     }
 
-    private fun song() = NowPlaying.song ?: if (compact) SAMPLE else null
+    private fun song(): NowPlaying.Song? = NowPlaying.song ?: if (compact) sample else null
+    private fun isSample(s: NowPlaying.Song?) = compact && s != null && s.pkg.isEmpty()
 
     /** Picks up a new song: its art, a small blurred copy, and its lyrics. */
     private fun refresh() {
         val s = song()
-        if (s?.art !== art || (art != null && blur == null)) {
-            art = s?.art
+        if (s?.art !== srcArt || (art != null && blur == null)) {
+            srcArt = s?.art
+            art = srcArt?.let { squareArt(it) }
             blur = art?.let { Bitmap.createScaledBitmap(it, 12, 12, true) }
         }
         if (s != lyricsFor) {
             lyricsFor = s
-            lines = if (s != null && s !== SAMPLE && NowPlaying.lyrics(context)) Lyrics.get(s) { if (lyricsFor === s) { lines = Lyrics.get(s) {}; invalidate() } } else null
+            lines = if (s != null && NowPlaying.lyrics(context)) Lyrics.get(s) { if (lyricsFor === s) { lines = Lyrics.get(s) {}; invalidate() } } else null
         }
         invalidate()
     }
 
     private fun x(v: Float) = Theme.px(v)
 
+    /** The art as sent, before [squareArt]. */
+    private var srcArt: Bitmap? = null
+
+    /**
+     * Video apps send a 16:9 frame, often padded with black bars. Trims the bars, then crops the
+     * middle to a square so the cover is never stretched.
+     */
+    private fun squareArt(src: Bitmap): Bitmap = try {
+        val b = if (src.config == Bitmap.Config.HARDWARE) src.copy(Bitmap.Config.ARGB_8888, false) else src
+        val w = b.width
+        val h = b.height
+        fun dark(px: Int) = maxOf(Color.red(px), Color.green(px), Color.blue(px)) < 24
+        fun rowDark(y: Int) = (0 until 16).all { dark(b.getPixel(it * (w - 1) / 15, y)) }
+        fun colDark(x: Int) = (0 until 16).all { dark(b.getPixel(x, it * (h - 1) / 15)) }
+        var top = 0; while (top < h / 3 && rowDark(top)) top++
+        var bottom = h - 1; while (bottom > h * 2 / 3 && rowDark(bottom)) bottom--
+        var left = 0; while (left < w / 3 && colDark(left)) left++
+        var right = w - 1; while (right > w * 2 / 3 && colDark(right)) right--
+        val cw = right - left + 1
+        val ch = bottom - top + 1
+        val side = minOf(cw, ch)
+        if (side == w && side == h) b
+        else Bitmap.createBitmap(b, left + (cw - side) / 2, top + (ch - side) / 2, side, side)
+    } catch (e: Exception) { src }
+
     override fun onDraw(c: Canvas) {
         val s = song()
         val w = width.toFloat()
         val h = height.toFloat()
-        val playing = NowPlaying.state == 1 || (s === SAMPLE)
-        val pos = if (s === SAMPLE) (System.currentTimeMillis() % 240_000L) else NowPlaying.positionMs()
+        val demo = isSample(s)
+        val playing = NowPlaying.state == 1 || demo
+        // The sample starts a little way in, so a lyric line shows at once.
+        val pos = if (demo) (40_000L + System.currentTimeMillis() - sampleAt) % s!!.duration else NowPlaying.positionMs()
         if (compact) { clip.reset(); clip.addRoundRect(0f, 0f, w, h, x(48f), x(48f), Path.Direction.CW); c.save(); c.clipPath(clip); c.drawColor(Color.BLACK) }
         // Blurred cover, then shade so the text reads.
         blur?.let { b ->
@@ -159,7 +233,7 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         fill.style = Paint.Style.STROKE; fill.strokeWidth = x(1.5f); fill.color = Theme.withAlpha(white, 0.14f)
         c.drawCircle(cx, top + d / 2, d / 2, fill)
         fill.style = Paint.Style.FILL
-        val g = context.icon(icon, Theme.withAlpha(white, 0.85f))
+        val g = context.frameIcon(icon, Theme.withAlpha(white, 0.85f))
         val gs = (d * 0.44f).toInt()
         g.setBounds((cx - gs / 2).toInt(), (top + d / 2 - gs / 2).toInt(), (cx + gs / 2).toInt(), (top + d / 2 + gs / 2).toInt())
         g.draw(c)
@@ -176,7 +250,7 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         val w = x(20f) + gs + x(12f) + chipT.measureText(text) + x(24f)
         fill.color = Theme.withAlpha(white, 0.10f)
         c.drawRoundRect(l, t, l + w, t + h, h / 2, h / 2, fill)
-        val g = context.icon(R.drawable.ic_lyrics, Theme.withAlpha(white, 0.7f))
+        val g = context.frameIcon(R.drawable.ic_lyrics, Theme.withAlpha(white, 0.7f))
         g.setBounds((l + x(20f)).toInt(), (t + (h - gs) / 2).toInt(), (l + x(20f) + gs).toInt(), (t + (h + gs) / 2).toInt())
         g.draw(c)
         c.drawText(text, l + x(20f) + gs + x(12f), baseline(chipT, t + h / 2), chipT)
@@ -196,7 +270,7 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         if (a != null) c.drawBitmap(a, null, box, bmp) else {
             fill.shader = LinearGradient(l, t, l + size, t + size, Theme.accent, Theme.duo(Theme.accent), Shader.TileMode.CLAMP)
             c.drawRect(box, fill); fill.shader = null
-            val g = context.icon(R.drawable.ic_music_note, Theme.withAlpha(white, 0.8f))
+            val g = context.frameIcon(R.drawable.ic_music_note, Theme.withAlpha(white, 0.8f))
             val gs = (size * 0.4f).toInt()
             g.setBounds((box.centerX() - gs / 2).toInt(), (box.centerY() - gs / 2).toInt(), (box.centerX() + gs / 2).toInt(), (box.centerY() + gs / 2).toInt())
             g.draw(c)
@@ -259,6 +333,14 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         }
     }
 
+    /** The part of [title] that fits [width], broken at a space, and what is left. */
+    private fun splitTitle(title: String, width: Float): Pair<String, String> {
+        if (titleP.measureText(title) <= width) return title to ""
+        val n = titleP.breakText(title, true, width, null)
+        val cut = title.lastIndexOf(' ', n).takeIf { it > 0 } ?: n
+        return title.substring(0, cut).trimEnd() to title.substring(cut).trimStart()
+    }
+
     private fun drawFull(c: Canvas, s: NowPlaying.Song, w: Float, h: Float, playing: Boolean, pos: Long) {
         cover(c, x(160f), x(200f), x(480f), x(32f))
         val tx = x(160f)
@@ -269,7 +351,10 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         note.draw(c)
         c.drawText(s.app.uppercase(), tx + ns + x(10f), y - appP.ascent(), appP)
         y += x(44f)
-        c.drawText(titleP.fit(s.title, tw), tx, y - titleP.ascent(), titleP)
+        // A long title wraps onto a second line at a word break.
+        val (first, rest) = splitTitle(s.title, tw)
+        c.drawText(first, tx, y - titleP.ascent(), titleP)
+        if (rest.isNotEmpty()) { y += x(54f); c.drawText(titleP.fit(rest, tw), tx, y - titleP.ascent(), titleP) }
         y += x(58f)
         c.drawText(artistP.fit(listOf(s.artist, s.album).filter { it.isNotEmpty() }.joinToString("  ·  "), tw), tx, y - artistP.ascent(), artistP)
         y += x(56f)
@@ -300,9 +385,22 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
             if (viz) chip(c, lx, x(220f), "No synced lyrics for this song")
             else empty(c, lx + lw / 2, x(480f), R.drawable.ic_lyrics, "No lyrics for this song", "LRCLIB has no synced lyrics for it yet")
         }
-        val now = Date()
-        val t = SimpleDateFormat(if (android.text.format.DateFormat.is24HourFormat(context)) "H:mm" else "h:mm", Locale.getDefault()).format(now)
+        val t = clockText()
         c.drawText(t, w - x(96f) - clockP.measureText(t), x(72f) - clockP.ascent(), clockP)
+    }
+
+    // Drawn every frame while the screensaver moves, so the format is kept.
+    private var clockFmt: SimpleDateFormat? = null
+    private var clockFmt24 = false
+    private var clockLocale: Locale? = null
+    private fun clockText(): String {
+        val is24 = android.text.format.DateFormat.is24HourFormat(context)
+        val loc = Locale.getDefault()
+        if (clockFmt == null || is24 != clockFmt24 || loc != clockLocale) {
+            clockFmt = SimpleDateFormat(if (is24) "H:mm" else "h:mm", loc); clockFmt24 = is24; clockLocale = loc
+        }
+        // Follows a time zone change, as a new format would.
+        return clockFmt!!.apply { timeZone = java.util.TimeZone.getDefault() }.format(Date())
     }
 
     private fun drawCompact(c: Canvas, s: NowPlaying.Song, w: Float, h: Float, playing: Boolean, pos: Long) {
@@ -314,14 +412,14 @@ class MusicSaver(ctx: Context, private val compact: Boolean = false) : View(ctx)
         val tw = w - tx - x(40f)
         c.drawText(s.app.uppercase(), tx, cy + x(18f), appP)
         c.drawText(titleP.fit(s.title, tw), tx, cy + x(56f), titleP)
-        c.drawText(artistP.fit(s.artist, tw), tx, cy + x(86f), artistP)
+        c.drawText(artistP.fit(if (s.album.isNotEmpty()) "${s.artist}  ·  ${s.album}" else s.artist, tw), tx, cy + x(86f), artistP)
         val ls = lines
         if (NowPlaying.lyrics(context)) {
-            val text = if (ls != null) ls.getOrNull(Lyrics.at(ls, pos))?.text else if (s === SAMPLE) "A line of the lyrics" else null
+            val text = if (ls != null) ls.getOrNull(Lyrics.at(ls, pos))?.text else null
             if (text != null) c.drawText(lineOn.fit(text, tw), tx, cy + x(134f), lineOn)
         }
         if (NowPlaying.viz(context)) {
-            if (s === SAMPLE || !bars.available) simulate(pos) else bars.step(playing)
+            if (isSample(s) || !bars.available) simulate(pos) else bars.step(playing)
             drawBars(c, cx - x(4f), cy + cs + x(20f), w - 2 * cx + x(8f), h - cy - cs - x(44f), x(8f))
         }
     }
@@ -380,6 +478,12 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bmp = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val disc = Path()
+    private val artBox = RectF()
+    private var btnShader: android.graphics.Shader? = null
+    private var btnX = 0f
+    private var btnD = 0f
+    private var btnH = 0f
+    private var btnAccent = 0
     private val pause = ctx.icon(R.drawable.ic_pause, Theme.onAccent)
     private val play = ctx.icon(R.drawable.ic_play_arrow, Theme.onAccent)
     private val start = android.os.SystemClock.uptimeMillis()
@@ -415,7 +519,7 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
         disc.reset(); disc.addCircle(ax + ad / 2, ay + ad / 2, ad / 2, Path.Direction.CW); c.clipPath(disc)
         if (NowPlaying.state == 1 && Theme.motion != 2) c.rotate(((android.os.SystemClock.uptimeMillis() - start) % 12_000L) * 0.03f, ax + ad / 2, ay + ad / 2)
         val a = s.art
-        if (a != null) c.drawBitmap(a, null, RectF(ax, ay, ax + ad, ay + ad), bmp)
+        if (a != null) { artBox.set(ax, ay, ax + ad, ay + ad); c.drawBitmap(a, null, artBox, bmp) }
         else { Theme.accentFill(fill, ax, ay, ax + ad, ay + ad); c.drawRect(ax, ay, ax + ad, ay + ad, fill); fill.shader = null }
         c.restore()
         val bd = 56f * u
@@ -424,7 +528,12 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
         val tw = bx - 16f * u - tx
         c.drawText(title.fit(s.title, tw), tx, h / 2 - 4f * u, title)
         c.drawText(artist.fit(s.artist, tw), tx, h / 2 - 4f * u - artist.ascent() + 2f * u, artist)
-        Theme.accentFill(fill, bx, (h - bd) / 2, bx + bd, (h + bd) / 2)
+        // The button's gradient only changes with its place or the accent; the pill redraws every frame while the cover turns.
+        if (btnShader == null || btnX != bx || btnD != bd || btnH != h || btnAccent != Theme.accent) {
+            btnX = bx; btnD = bd; btnH = h; btnAccent = Theme.accent
+            Theme.accentFill(fill, bx, (h - bd) / 2, bx + bd, (h + bd) / 2); btnShader = fill.shader
+        }
+        fill.shader = btnShader
         c.drawCircle(bx + bd / 2, h / 2, bd / 2, fill)
         fill.shader = null
         val ic = if (NowPlaying.state == 1) pause else play

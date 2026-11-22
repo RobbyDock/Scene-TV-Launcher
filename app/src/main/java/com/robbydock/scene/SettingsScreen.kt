@@ -23,9 +23,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private companion object {
         /** Pane titles whose settings live in each profile's own file. */
         val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Clock & Weather", "Spotlight",
-            "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "Locked Apps", "Open on Start", "Export Settings", "Restore Settings", "Reset Home")
+            "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "App Categories", "Locked Apps", "Open on Start", "Your Library", "Export Settings", "Restore Settings", "Reset Home")
         /** Pane titles whose settings every profile shares. */
-        val ALL_PROFILES = setOf("Profiles", "Sounds", "Stremio Account", "Screensaver", "Now Playing", "Inputs")
+        val ALL_PROFILES = setOf("Profiles", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
         const val GROUP_LABEL_H = 32f
         const val GROUP_GAP = 14f
         /** Space above the large title, which scrolls away with the list. */
@@ -90,6 +90,8 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private val rowIcons = HashMap<String, Int>()
     private var current: String? = null
     private var backupStatus = ""
+    /** Progress or a problem from the last update step, shown in the Updates pane. */
+    private var updateStatus = ""
     private var pendingPreview: Runnable? = null
     private var glassPreview: GlassPreview? = null
 
@@ -200,6 +202,64 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         endGroup()
 
+        group("Watching")
+        val src = Watch.source(act)
+        row("watch", src.icon, "Watch With", src.label) { paneWatch() }.apply {
+            brandIcon = true
+            setOnClickListener { pane.findViewWithTag<View>("watch${Source.values().indexOf(Watch.source(act))}")?.requestFocus() }
+        }
+        val signed = Watch.signedIn(act)
+        row("account", src.icon, "${src.label} Account", if (signed) (Watch.account(act) ?: "Signed in") else "Not signed in") { paneAccount() }.apply {
+            brandIcon = true
+            setOnClickListener { if (Watch.signedIn(act)) pane.findViewWithTag<View>("acct0")?.requestFocus() else WatchSignIn.start(act, Watch.source(act)) }
+        }
+        row("spot", R.drawable.ic_movie, "Spotlight", "") { paneSpotlight() }.apply {
+            trail = SettingRow.Trail.SWITCH
+            checked = cfg.spotlight
+            setOnClickListener { cfg.spotlight = !cfg.spotlight; act.save(); act.home.rebuild(); refresh("spot") }
+        }
+        val cwCount = act.hiddenContinueCount
+        row("cwhidden", R.drawable.ic_movie_off, "Hidden Titles", if (cwCount == 0) "None" else "$cwCount hidden") { paneCwHidden() }.apply {
+            trail = SettingRow.Trail.NONE
+            setOnClickListener { if (act.hiddenContinueCount > 0) { act.unhideAllContinue(); refresh("cwhidden") } }
+        }
+        endGroup()
+
+        group("Home Screen")
+        row("clock", R.drawable.ic_schedule, "Clock & Weather", clockSummary()) { paneClock() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("opt0")?.requestFocus() }
+        }
+        // Left out on TVs that can't allow the access it needs.
+        if (NowPlaying.available(act)) row("music", R.drawable.ic_music_note, "Now Playing", musicSummary()) { paneMusic() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("music0")?.requestFocus() }
+        }
+        row("homerow", R.drawable.ic_apps, "Home Row", homeRowSummary()) { paneHomeRow() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("homerow0")?.requestFocus() }
+        }
+        row("rows", R.drawable.ic_view_agenda, "App Rows", if (cfg.rows.isEmpty()) "None" else cfg.rows.joinToString(", ") { it.name }) { paneRows() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("rows0")?.requestFocus() }
+        }
+        row("start", R.drawable.ic_power_settings_new, "Open on Start", startName() ?: "Nothing") { paneStart() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("start0")?.requestFocus() }
+        }
+        endGroup()
+
+        group("Apps")
+        row("pins", R.drawable.ic_push_pin, "Pinned Apps", "${cfg.pinned.size} pinned") { panePinned() }.apply {
+            setOnClickListener { act.push(AppPicker(act)) }
+        }
+        val hiddenCount = hiddenInstalled().size
+        row("hidden", R.drawable.ic_visibility_off, "Hidden Apps", if (hiddenCount == 0) "None" else "$hiddenCount hidden") { paneHidden() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("hidden0")?.requestFocus() }
+        }
+        row("sort", R.drawable.ic_sort_by_alpha, "All Apps Order", arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { paneSort() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("sort0")?.requestFocus() }
+        }
+        row("locks", R.drawable.ic_lock, "Locked Apps", if (cfg.locked.isEmpty()) "None" else "${cfg.locked.size} locked") { paneLocks() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("locks0")?.requestFocus() }
+        }
+        endGroup()
+
         group("Appearance")
         row("accent", R.drawable.ic_palette, "Accent Colour", Theme.ACCENTS[cfg.accent].name) { paneAccent() }.apply {
             swatch = Theme.accent
@@ -225,53 +285,21 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         endGroup()
 
-        group("Home Screen")
-        row("clock", R.drawable.ic_schedule, "Clock & Weather", clockSummary()) { paneClock() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("opt0")?.requestFocus() }
+        group("Device")
+        row("dream", R.drawable.ic_schedule, "Screensaver", dreamSummary()) { paneDream() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("dream0")?.requestFocus() }
         }
-        row("spot", R.drawable.ic_movie, "Spotlight", "") { paneSpotlight() }.apply {
-            trail = SettingRow.Trail.SWITCH
-            checked = cfg.spotlight
-            setOnClickListener { cfg.spotlight = !cfg.spotlight; act.save(); act.home.rebuild(); refresh("spot") }
+        val inputs = Inputs.list(act)
+        if (inputs.isNotEmpty()) row("inputs", R.drawable.ic_input, "Inputs",
+            if (Inputs.showOnHome(act)) "${inputs.count { !it.hidden }} on Home" else "Off") { paneInputs() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("inputs0")?.requestFocus() }
         }
-        row("homerow", R.drawable.ic_apps, "Home Row", homeRowSummary()) { paneHomeRow() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("homerow0")?.requestFocus() }
-        }
-        row("pins", R.drawable.ic_push_pin, "Pinned Apps", "${cfg.pinned.size} pinned") { panePinned() }.apply {
-            setOnClickListener { act.push(AppPicker(act)) }
-        }
-        val hiddenCount = hiddenInstalled().size
-        row("hidden", R.drawable.ic_visibility_off, "Hidden Apps", if (hiddenCount == 0) "None" else "$hiddenCount hidden") { paneHidden() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("hidden0")?.requestFocus() }
-        }
-        row("sort", R.drawable.ic_sort_by_alpha, "All Apps Order", arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { paneSort() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("sort0")?.requestFocus() }
-        }
-        val cwCount = act.hiddenContinueCount
-        row("cwhidden", R.drawable.ic_movie_off, "Hidden Titles", if (cwCount == 0) "None" else "$cwCount hidden") { paneCwHidden() }.apply {
-            trail = SettingRow.Trail.NONE
-            setOnClickListener { if (act.hiddenContinueCount > 0) { act.unhideAllContinue(); refresh("cwhidden") } }
-        }
-        row("rows", R.drawable.ic_view_agenda, "App Rows", if (cfg.rows.isEmpty()) "None" else cfg.rows.joinToString(", ") { it.name }) { paneRows() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("rows0")?.requestFocus() }
-        }
-        row("locks", R.drawable.ic_lock, "Locked Apps", if (cfg.locked.isEmpty()) "None" else "${cfg.locked.size} locked") { paneLocks() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("locks0")?.requestFocus() }
-        }
-        row("start", R.drawable.ic_power_settings_new, "Open on Start", startName() ?: "Nothing") { paneStart() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("start0")?.requestFocus() }
+        row("remote", R.drawable.ic_settings_remote, "Remote Buttons", remoteSummary()) { paneRemote() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("remote0")?.requestFocus() }
         }
         endGroup()
 
-        group("Stremio")
-        val signed = Stremio.signedIn(act)
-        row("account", R.drawable.ic_stremio, "Stremio Account", if (signed) (Stremio.email(act) ?: "Signed in") else "Not signed in") { paneAccount() }.apply {
-            brandIcon = true
-            setOnClickListener { if (Stremio.signedIn(act)) pane.findViewWithTag<View>("acct0")?.requestFocus() else act.openSignIn() }
-        }
-        endGroup()
-
-        group("Backup & Reset")
+        group("System")
         row("export", R.drawable.ic_backup, "Export Settings", "") { paneBackup(true) }.apply {
             trail = SettingRow.Trail.NONE
             setOnClickListener {
@@ -328,36 +356,11 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 }
             }
         }
-        endGroup()
-
-        group("Device")
-        row("dream", R.drawable.ic_schedule, "Screensaver", dreamSummary()) { paneDream() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("dream0")?.requestFocus() }
+        row("update", R.drawable.ic_update, "Updates", updateSummary()) { paneUpdates() }.apply {
+            trail = SettingRow.Trail.NONE
+            if (Updates.shouldNotify(act)) { pill = "New"; pillAccent = true }
+            setOnClickListener { pane.findViewWithTag<View>("upd0")?.requestFocus() }
         }
-        row("music", R.drawable.ic_music_note, "Now Playing", musicSummary()) { paneMusic() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("music0")?.requestFocus() }
-        }
-        val inputs = Inputs.list(act)
-        if (inputs.isNotEmpty()) row("inputs", R.drawable.ic_input, "Inputs",
-            if (Inputs.showOnHome(act)) "${inputs.count { !it.hidden }} on Home" else "Off") { paneInputs() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("inputs0")?.requestFocus() }
-        }
-        row("remote", R.drawable.ic_settings_remote, "Remote Buttons", remoteSummary()) { paneRemote() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("remote0")?.requestFocus() }
-        }
-        systemRow("sys", R.drawable.ic_settings, "System Settings", Settings.ACTION_SETTINGS,
-            listOf("Accounts", "Date, Time & Language", "Privacy", "Device Info & Updates"))
-        systemRow("net", R.drawable.ic_wifi, "Network & Internet", Settings.ACTION_WIFI_SETTINGS,
-            listOf("Wi-Fi", "Ethernet", "Proxy & IP"))
-        systemRow("remotes", R.drawable.ic_settings_remote, "Remotes & Accessories", Settings.ACTION_BLUETOOTH_SETTINGS,
-            listOf("Remotes & Gamepads", "Headphones & Speakers", "TV Control"))
-        systemRow("display", R.drawable.ic_display_settings, "Display & Sound", "android.settings.DISPLAY_SETTINGS",
-            listOf("Resolution", "HDR & Colour", "Audio Output", "Screensaver"))
-        systemRow("appsys", R.drawable.ic_apps, "Apps & Storage", Settings.ACTION_APPLICATION_SETTINGS,
-            listOf("Permissions", "Cache & Data", "Default Apps", "Storage"))
-        endGroup()
-
-        group("About")
         row("about", R.drawable.ic_info, "About", versionName()) { paneAbout() }.apply {
             trail = SettingRow.Trail.NONE
             setOnClickListener { pane.findViewWithTag<View>("about0")?.requestFocus() }
@@ -378,9 +381,8 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private var first = true
 
     private fun group(title: String) {
-        list.addView(act.label(title.uppercase(), 19f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply {
+        list.addView(act.label(title, 24f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply {
             gravity = Gravity.CENTER_VERTICAL
-            letterSpacing = 0.14f
             setPadding(Theme.ipx(32f), 0, 0, 0)
         }, LinearLayout.LayoutParams(-2, Theme.ipx(GROUP_LABEL_H)).apply {
             topMargin = if (first) 0 else Theme.ipx(36f)
@@ -401,7 +403,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     private fun endGroup() { groupView = null }
 
-    /** Card fill: a faint light along the top edge and a soft shadow below. */
+    /** Adds a row to the open group. Focus shows its pane. */
     private fun row(key: String, icon: Int, title: String, sub: String, pane: () -> Unit): SettingRow {
         val g = groupView!!
         val r = SettingRow(act, icon, title).apply {
@@ -409,7 +411,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             divider = g.childCount > 0
             lean = true
             focusKey = key
-            onFocused = { current = key; markSelected(); pane() }
+            onFocused = { if (!clearingPane) { current = key; markSelected(); pane() } }
         }
         g.addView(r, LinearLayout.LayoutParams(-1, Theme.ipx(112f)))
         rows[key] = r
@@ -424,13 +426,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             r.marked = k == current
             r.aboveSelected = prev
             prev = r.marked
-        }
-    }
-
-    private fun systemRow(key: String, icon: Int, title: String, action: String, inside: List<String>) {
-        row(key, icon, title, "") { paneSystem(title, inside, action) }.apply {
-            trail = SettingRow.Trail.OPEN
-            setOnClickListener { pane.findViewWithTag<View>("sysopen")?.requestFocus() ?: act.openSystemSettings(action) }
         }
     }
 
@@ -471,7 +466,10 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private fun paneHeader(title: String, body: String = "") {
         pendingPreview?.let { removeCallbacks(it) }
         glassPreview = null
+        // Removing the focused control can hand focus to a list row, which must not draw its own pane into this one.
+        clearingPane = true
         pane.removeAllViews()
+        clearingPane = false
         pane.place(act.label(title, 48f, Theme.TEXT, Theme.BOLD).apply { letterSpacing = -0.01f }, 48f, 40f, PANE_W - 96f, 62f)
         // Says whether a change stays with this profile or reaches every profile.
         val scope = when (title) {
@@ -484,7 +482,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             box.addView(Chip(act, scope, tinted = true).apply { contentDescription = scope }, FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END))
             pane.place(box, 48f, 50f, PANE_W - 96f, 44f)
         }
-        if (body.isNotEmpty()) pane.place(act.label(body, 24f, Theme.TEXT_DIM, Theme.REGULAR, 2), 48f, 114f, PANE_W - 96f, 66f)
+        if (body.isNotEmpty()) pane.place(act.label(body, 24f, Theme.TEXT_DIM, Theme.REGULAR, 1), 48f, 114f, PANE_W - 96f, 34f)
         Motion.enter(pane)
     }
 
@@ -544,6 +542,76 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private fun emptyState(icon: Int, text: String, y: Float = 260f) {
         pane.place(IconBadge(act, icon), (PANE_W - 120f) / 2, y, 120f, 120f)
         pane.place(centredText(text, 26f, Theme.TEXT_DIM), 48f, y + 152f, PANE_W - 96f, 80f).also { (it as TextView).maxLines = 2 }
+    }
+
+    /**
+     * Signed out: setup's picture of Home with Continue watching shows what signing in adds, then
+     * the service, one line on how it works, and the button.
+     */
+    private fun signedOutPane(brand: Int, title: String, hint: String, button: String, buttonIcon: Int, go: () -> Unit) {
+        // The picture's TV starts 153 units down its 820-unit box.
+        val art = OnboardArt(act).apply { spotlight = true }
+        pane.place(art, (PANE_W - 800f) / 2, top0 - 143f, 800f, 820f)
+        art.show(OnboardArt.Kind.STREMIO, 0)
+        val y = top0 + 560f
+        val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        head.addView(ImageView(act).apply { setImageResource(brand) }, LinearLayout.LayoutParams(Theme.ipx(44f), Theme.ipx(44f)).apply { rightMargin = Theme.ipx(16f) })
+        head.addView(act.label(title, 34f, Theme.TEXT, Theme.SEMIBOLD), LinearLayout.LayoutParams(-2, -2))
+        pane.place(head, 48f, y, PANE_W - 96f, 52f)
+        pane.place(centredText(hint, 24f, Theme.TEXT_DIM), 48f, y + 62f, PANE_W - 96f, 36f)
+        val b = PillButton(act, button, buttonIcon, true)
+        b.tag = "acct0"
+        b.setOnClickListener { go() }
+        val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
+        row.addView(b, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
+        pane.place(row, 0f, y + 128f, PANE_W, 80f)
+        Motion.stagger(listOf(head, row), 60L)
+    }
+
+    private fun updateSummary(): String {
+        val r = Updates.available(act)
+        return if (r != null) "Version ${r.version} available" else "Up to date  ·  ${versionName()}"
+    }
+
+    /**
+     * Updates from GitHub: the installed and newest versions, install or skip, and the daily check.
+     * Nothing installs without Android's own confirmation.
+     */
+    private fun paneUpdates() {
+        paneHeader("Updates", "Checks GitHub once a day, only while Home is open.")
+        val r = Updates.available(act)
+        val lastLook = Updates.lastCheck(act).let { if (it == 0L) "Not checked yet" else "Checked " + android.text.format.DateUtils.getRelativeTimeSpanString(it).toString().replaceFirstChar { c -> c.lowercase() } }
+        var y = infoCard(listOf("Installed" to versionName(), "Newest" to (r?.version ?: "This one")), top1)
+        val add = optionColumn(y + 20f, "upd")
+        if (r != null) {
+            val mb = if (r.size > 0) "%.1f MB".format(r.size / 1_048_576f) else ""
+            add(R.drawable.ic_update, "Install ${r.version}", mb, SettingRow.Trail.NONE) {
+                if (!Updates.canInstall(act)) {
+                    val go = Updates.permissionIntent(act)
+                    if (go == null) { updateStatus = "This TV has no setting to let Scene install apps."; refresh("update"); return@add }
+                    confirm("Allow Scene to install updates?", "A one-time Android setting", "Open setting", R.drawable.ic_open_in_new,
+                        "Turn on Allow from this source for Scene, then come back") { act.start(go, "Can't open the setting") }
+                    return@add
+                }
+                Updates.install(act, r) { s -> updateStatus = s; if (current == "update") refresh("update") }
+            }
+            if (Updates.skipped(act) != r.version) add(R.drawable.ic_close, "Skip This Version", "", SettingRow.Trail.NONE) {
+                Updates.skip(act, r.version); act.home.updateBadge(); refresh("update")
+            }
+        }
+        add(R.drawable.ic_sync, "Check Now", lastLook, SettingRow.Trail.NONE) {
+            updateStatus = "Checking GitHub"
+            refresh("update")
+            Updates.check(act) { ok ->
+                updateStatus = if (!ok) "Couldn't reach GitHub." else if (Updates.available(act) == null) "Scene is up to date." else ""
+                act.home.updateBadge()
+                if (current == "update") refresh("update")
+            }
+        }
+        add(R.drawable.ic_schedule, "Check Automatically", "", SettingRow.Trail.SWITCH) {
+            Updates.setAuto(act, !Updates.auto(act)); refresh("update")
+        }.checked = Updates.auto(act)
+        if (updateStatus.isNotEmpty()) paneHint(updateStatus)
     }
 
     /** Rounded card for a preview or short content, on the surface colour. */
@@ -791,7 +859,12 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             cfg.weatherOn = !cfg.weatherOn
             if (cfg.weatherOn) act.refreshWeather(force = true)
         }
-        toggle(R.drawable.ic_thermostat, "Fahrenheit", cfg.fahrenheit, cfg.weatherOn) { cfg.fahrenheit = !cfg.fahrenheit }
+        option(R.drawable.ic_thermostat, "Temperature Units", if (cfg.fahrenheit) "Fahrenheit" else "Celsius", cfg.weatherOn) { t ->
+            choose("Temperature Units", listOf(
+                Choice("Celsius", R.drawable.ic_thermostat, "9°"),
+                Choice("Fahrenheit", R.drawable.ic_thermostat, "48°"),
+            ), if (cfg.fahrenheit) 1 else 0, t) { cfg.fahrenheit = it == 1 }
+        }
         option(R.drawable.ic_partly_cloudy_day, "Weather Details", arrayOf("Full", "High & low", "Now")[cfg.weatherDetail], cfg.weatherOn) { t ->
             choose("Weather Details", listOf(
                 Choice("Full", R.drawable.ic_partly_cloudy_day, "Clear · 62° / 38°"),
@@ -847,9 +920,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         var n = 0
         return { icon, title, value, trail, click ->
             SettingRow(act, icon, title).apply {
-                // Rows without a trail show the text as a subtitle.
-                if (trail == SettingRow.Trail.NONE) subtitle = value else this.value = value
-                this.trail = trail
+                // Pane rows carry no subtitle. A value on a plain row shows at the end.
+                this.value = value
+                this.trail = if (trail == SettingRow.Trail.NONE && value.isNotEmpty()) SettingRow.Trail.VALUE else trail
                 divider = col.childCount > 0
                 tag = "$tagPrefix${n++}"
                 setOnClickListener { click() }
@@ -875,8 +948,11 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         if (q.id == Profiles.currentId) return
         val go = {
             act.switchProfile(q.id)
-            refresh("profile")
-            post { pane.findViewWithTag<View>("profav${Profiles.list.indexOf(q)}")?.requestFocus() }
+            // Switching to a Kids profile closes Settings.
+            if (!q.kids) {
+                refresh("profile")
+                post { pane.findViewWithTag<View>("profav${Profiles.list.indexOf(q)}")?.requestFocus() }
+            }
         }
         if (!q.locked) go() else act.push(PasscodeScreen(act, q, PasscodeScreen.Mode.CHECK) { act.pop(); go() })
     }
@@ -925,6 +1001,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             val cur = q.id == p.id
             caption(q.name, i, 20f, 21f, if (cur) Theme.TEXT else Theme.TEXT_DIM, if (cur) Theme.SEMIBOLD else Theme.REGULAR)
             if (q.admin) caption("Admin", i, 50f, 18f, Theme.accent, Theme.SEMIBOLD)
+            else if (q.kids) caption("Kids", i, 50f, 18f, Theme.accent, Theme.SEMIBOLD)
             avatars.add(av)
         }
         if (canAdd) {
@@ -957,6 +1034,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                         }
                     },
                     Sheet.Action("Turn Off Passcode", R.drawable.ic_close) {
+                        if (!keepsKidsGate(p)) return@Action
                         withCode(p) { Profiles.setCode(act, p, null); act.home.rebuild(); refresh("profile") }
                     },
                 )))
@@ -1014,13 +1092,14 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                     }
                 }
             })
-            a.add(Sheet.Action(if (q.admin) "Make Standard" else "Make Admin", R.drawable.ic_workspace_premium) { changeRole(p, q) })
+            if (!q.kids) a.add(Sheet.Action(if (q.admin) "Make Standard" else "Make Admin", R.drawable.ic_workspace_premium) { changeRole(p, q) })
+            if (!q.admin) a.add(Sheet.Action(if (q.kids) "Turn Off Kids" else "Make Kids Profile", R.drawable.ic_child_care) { changeKids(p, q) })
         }
         if (Profiles.list.size > 1 && (self || p.admin)) {
             a.add(Sheet.Action("Delete Profile", R.drawable.ic_delete) { deleteProfile(p, q) })
         }
         if (a.isEmpty()) { act.toast("Only an admin can change ${q.name}"); return }
-        act.push(Sheet(act, q.name, if (q.admin) "Admin" else "Standard", null, a, headerProfile = q))
+        act.push(Sheet(act, q.name, if (q.admin) "Admin" else if (q.kids) "Kids" else "Standard", null, a, headerProfile = q))
     }
 
     /**
@@ -1085,7 +1164,49 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     }
 
     /** Makes [q] an admin or a standard profile. There is always at least one admin. */
+    /**
+     * True when [p] can lose its passcode or admin role. While a Kids profile exists, one admin
+     * passcode must stay, so leaving Kids keeps needing one. Otherwise explains and returns false.
+     */
+    private fun keepsKidsGate(p: Profile): Boolean {
+        if (!p.admin || Profiles.list.none { it.kids } || Profiles.lockedAdmins().any { it !== p }) return true
+        act.push(Dialog(act, 0, "A Kids profile needs this passcode",
+            "Leaving a Kids profile takes an admin's passcode, and ${p.name}'s is the only one. Turn off Kids first.",
+            listOf(Dialog.Button("OK", primary = true)), p))
+        return false
+    }
+
+    /**
+     * Turns Kids on or off for [q], with [by]'s passcode. Kids needs a passcode on every other
+     * profile, so no one can switch out of it to an open profile.
+     */
+    private fun changeKids(by: Profile, q: Profile) {
+        val on = !q.kids
+        if (on) {
+            val open = Profiles.list.filter { it !== q && !it.kids && !it.locked }
+            if (open.isNotEmpty()) {
+                act.push(Dialog(act, 0, "Passcodes first",
+                    "Every other profile needs a passcode before ${q.name} can be a Kids profile. Still open: ${open.joinToString(", ") { it.name }}.",
+                    listOf(Dialog.Button("OK", primary = true)), q))
+                return
+            }
+        }
+        confirm(
+            if (on) "Make ${q.name} a Kids profile?" else "Turn off Kids for ${q.name}?",
+            if (on) "No Spotlight and no Settings. Leaving takes a passcode, and any admin's works"
+                else "${q.name} gets the Spotlight and Settings back",
+            if (on) "Make Kids" else "Turn Off Kids", R.drawable.ic_child_care, "", who = q,
+        ) {
+            withCode(by) {
+                if (!Profiles.setKids(act, q, on)) return@withCode
+                refresh("profile")
+                act.toast(if (on) "${q.name} is now a Kids profile" else "${q.name} is a standard profile again")
+            }
+        }
+    }
+
     private fun changeRole(by: Profile, q: Profile) {
+        if (q.admin && !keepsKidsGate(q)) return
         if (!Roles.canDemote(Profiles.list, q)) {
             act.push(Dialog(act, 0, "${q.name} is the only admin",
                 "Make another profile an admin first. There is always at least one.",
@@ -1116,7 +1237,34 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         b.makeFocusable(true)
         a.setOnClickListener { if (!cfg.spotlight) { cfg.spotlight = true; act.save(); act.home.rebuild(); refresh("spot") } }
         b.setOnClickListener { if (cfg.spotlight) { cfg.spotlight = false; act.save(); act.home.rebuild(); refresh("spot") } }
+        // Your Library and its rows sit under Continue watching. Rows stay listed, greyed, while off.
+        val add = optionColumn(top1 + 300f, "spotopt")
+        val lib = Library.onHome(act)
+        val shelves = Watch.shelves(act)
+        add(R.drawable.ic_view_agenda, "Your Library", "", SettingRow.Trail.SWITCH) {
+            cfg.libraryHome = if (Library.onHome(act)) 0 else 1
+            // A single shelf has no switch of its own, so this one rules it.
+            if (shelves.size == 1) cfg.libraryOff.remove(shelves[0].key)
+            act.save(); act.home.rebuild(); refresh("spot")
+        }.apply { checked = lib; dimmed = !cfg.spotlight }
+        if (shelves.size > 1) for (sh in shelves) {
+            val icon = when {
+                sh.key.contains("recent") -> R.drawable.ic_history
+                sh.key.contains("show") || sh.key.contains("series") -> R.drawable.ic_tv
+                else -> R.drawable.ic_movie
+            }
+            add(icon, sh.title, "", SettingRow.Trail.SWITCH) {
+                if (!cfg.libraryOff.remove(sh.key)) cfg.libraryOff.add(sh.key)
+                act.save(); act.home.rebuild(); refresh("spot")
+            }.apply { checked = sh.key !in cfg.libraryOff; dimmed = !cfg.spotlight || !lib }
+        }
+        add(R.drawable.ic_open_in_new, "Open Library", "", SettingRow.Trail.NONE) {
+            if (Watch.signedIn(act)) act.push(LibraryScreen(act)) else act.toast("Sign in to ${Watch.name(act)} first")
+        }
     }
+
+    /** True while the pane is being emptied, so focus passing through the list opens nothing. */
+    private var clearingPane = false
 
     private fun tileGrid(pkgs: List<String>, focusable: Boolean, onPick: ((String) -> Unit)?, top: Float = top0) {
         val cols = 5
@@ -1173,17 +1321,15 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val y = top0 + 3 * 112f + 40f
         if (ClockDream.isSelected(act)) {
             section("Starts after the TV's sleep timer", y)
-        } else {
-            // Android TV has no screensaver picker, so Scene needs one permission to select itself.
-            section("Not active yet", y)
-            pane.place(act.label("Android needs a one-time permission before Scene can be the screensaver. From a computer, run:",
-                24f, Theme.TEXT_DIM, Theme.REGULAR, 3), 56f, y + 44f, PANE_W - 112f, 100f)
-            val cmd = Panel(act, Theme.R_CHIP, { Theme.surface }, false)
-            cmd.place(act.label("adb shell pm grant ${act.packageName} android.permission.WRITE_SECURE_SETTINGS",
-                21f, Theme.TEXT, android.graphics.Typeface.MONOSPACE, 2), 24f, 14f, PANE_W - 112f - 48f, 64f)
-            pane.place(cmd, 48f, y + 152f, PANE_W - 96f, 92f)
-            pane.place(act.label("Then open this page again.", 24f, Theme.TEXT_DIM), 56f, y + 262f, PANE_W - 112f, 36f)
+            return
         }
+        // Without Android's picker, Home shows the screensaver itself while it is open.
+        section("Starts after 5 minutes on Home", y)
+        val picker = ClockDream.pickerIntent(act) ?: return
+        pane.place(act.label("To have it start from any app, choose Scene in Android's screensaver settings.",
+            24f, Theme.TEXT_DIM, Theme.REGULAR, 3), 56f, y + 44f, PANE_W - 112f, 70f)
+        val more = optionColumn(y + 124f, "dreampick")
+        more(R.drawable.ic_open_in_new, "Android Screensaver Settings", "", SettingRow.Trail.OPEN) { act.start(picker) }
     }
 
     private fun musicSummary(): String = when {
@@ -1201,34 +1347,29 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val blocked = { act.toast("Allow notification access first"); pane.findViewWithTag<View>("music0")?.requestFocus() }
         if (!access) {
             add(R.drawable.ic_shield, "Allow Notification Access", "", SettingRow.Trail.OPEN) {
-                val i = android.content.Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                if (i.resolveActivity(act.packageManager) != null) act.start(i)
-                else act.push(Dialog(act, R.drawable.ic_shield, "Allow from a computer",
-                    "This TV has no page for notification access. With adb, run: adb shell cmd notification allow_listener " +
-                        NowPlaying.component(act).flattenToString() + " Then open this page again.",
-                    listOf(Dialog.Button("OK", primary = true, focus = true))))
-            }.apply { subtitle = "Scene reads only what is playing" }
+                act.openNotificationAccess()
+            }
         }
-        fun toggle(icon: Int, title: String, sub: String, key: String, on: Boolean, flip: (Boolean) -> Unit = {}) =
+        fun toggle(icon: Int, title: String, key: String, on: Boolean, flip: (Boolean) -> Unit = {}) =
             add(icon, title, "", SettingRow.Trail.SWITCH) {
                 if (!access) blocked() else { NowPlaying.set(act, key, !on); flip(!on); refresh("music") }
-            }.apply { checked = on; subtitle = sub; dimmed = !access }
-        toggle(R.drawable.ic_music_note, "Show on Home", "Next to the weather", "npHome", NowPlaying.showOnHome(act)) { act.home.nowPlayingChanged() }
-        toggle(R.drawable.ic_lyrics, "Music Screensaver", "Instead of your screensaver while music plays", "npSaver", NowPlaying.saver(act))
-        toggle(R.drawable.ic_lyrics, "Lyrics", "From LRCLIB. Sends only the song name.", "npLyrics", NowPlaying.lyrics(act))
+            }.apply { checked = on; dimmed = !access }
+        toggle(R.drawable.ic_music_note, "Show on Home", "npHome", NowPlaying.showOnHome(act)) { act.home.nowPlayingChanged() }
+        toggle(R.drawable.ic_lyrics, "Music Screensaver", "npSaver", NowPlaying.saver(act))
+        toggle(R.drawable.ic_lyrics, "Lyrics", "npLyrics", NowPlaying.lyrics(act))
         add(R.drawable.ic_graphic_eq, "Visualizer", "", SettingRow.Trail.SWITCH) {
             if (!access) { blocked(); return@add }
             val on = NowPlaying.viz(act)
             if (on) { NowPlaying.set(act, "npViz", false); refresh("music") }
             else act.withMicPermission { ok -> if (ok) NowPlaying.set(act, "npViz", true); refresh("music") }
-        }.apply { checked = NowPlaying.viz(act); subtitle = "Moves to the TV's sound. Needs audio access."; dimmed = !access }
+        }.apply { checked = NowPlaying.viz(act); dimmed = !access }
         add(R.drawable.ic_play_arrow, "Full Screen Preview", "", SettingRow.Trail.NONE) {
             if (!access) blocked() else act.push(MusicSaverScreen(act))
         }.dimmed = !access
     }
 
     private fun paneInputs() {
-        paneHeader("Inputs", "HDMI inputs on this TV. Turn off the row, or just the inputs you don't use.")
+        paneHeader("Inputs", "This TV's HDMI inputs. Hide the row or single inputs.")
         val add = optionColumn(top1 + 20f, "inputs")
         val on = Inputs.showOnHome(act)
         add(R.drawable.ic_input, "Show on Home", "", SettingRow.Trail.SWITCH) {
@@ -1237,7 +1378,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         for (i in Inputs.list(act)) {
             add(R.drawable.ic_input, i.name, "", SettingRow.Trail.SWITCH) {
                 Inputs.setHidden(act, i.id, !i.hidden); act.home.rebuild(); refresh("inputs")
-            }.apply { checked = !i.hidden; subtitle = i.system; dimmed = !on }
+            }.apply { checked = !i.hidden; dimmed = !on }
         }
     }
 
@@ -1268,7 +1409,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         add(R.drawable.ic_home, "Home Opens Scene", "", SettingRow.Trail.SWITCH) {
             Remap.setHomeOpensScene(act, !Remap.homeOpensScene(act))
             refresh("remote")
-        }.apply { checked = Remap.homeOpensScene(act); subtitle = "Long press Home is not available while on"; dimmed = !on }
+        }.apply { checked = Remap.homeOpensScene(act); dimmed = !on }
         val known = Remap.knownButtons().map { it.key }
         for (b in Remap.buttons(act)) {
             fun name(n: Int) = Remap.target(act, b.key, n)?.let { Remap.label(it, act.apps) }
@@ -1279,7 +1420,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             }.apply { dimmed = !on }
         }
         if (on) {
-            add(R.drawable.ic_add, "Add Another Button", "Press it on your remote when asked", SettingRow.Trail.NONE) {
+            add(R.drawable.ic_add, "Add Another Button", "", SettingRow.Trail.NONE) {
                 act.toast("Press the remote button you want to add")
                 val ask = Runnable { Remap.learning = null }
                 Remap.learning = { key ->
@@ -1354,19 +1495,39 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     private fun startName(): String? = act.cfg.startApp.takeIf { it.isNotEmpty() }?.let { act.app(it)?.label ?: it }
 
+    /**
+     * Every row under Pinned apps: your own rows, then the ready-made ones that fill and sort
+     * themselves by kind of app. Off ready-made rows stay listed, greyed, so they can be turned on.
+     */
     private fun paneRows() {
-        paneHeader("App Rows", "Your own rows under Pinned apps. Add apps from any app's options.")
-        val add = optionColumn(top1 + 20f, "rows")
+        paneHeader("App Rows", "Rows under Pinned apps. Ready-made ones fill themselves.")
+        val ph = 290f
+        pane.place(CategoryPreview(act), 48f, top1, PANE_W - 96f, ph)
+        val add = optionColumn(top1 + ph + 24f, "rows")
         for ((ri, r) in act.cfg.rows.withIndex()) {
-            add(R.drawable.ic_view_agenda, r.name, "${appCount(act.rowApps(r).size)}  ·  ${RowSort.NAMES[r.sort]}", SettingRow.Trail.NONE) {
+            if (r.auto.isNotEmpty()) continue
+            add(R.drawable.ic_view_agenda, r.name, appCount(act.rowApps(r).size), SettingRow.Trail.NONE) {
                 act.rowMenu(ri) { refresh("rows") }
             }
         }
         if (act.cfg.rows.size < Config.MAX_ROWS) add(R.drawable.ic_add, "New Row", "", SettingRow.Trail.NONE) { act.newRow { refresh("rows") } }
+        for (k in AppCategory.KINDS) {
+            val on = act.cfg.rows.any { it.auto == k.key }
+            add(k.icon, k.name, "", SettingRow.Trail.SWITCH) {
+                val r = act.cfg.rows.firstOrNull { it.auto == k.key }
+                if (r != null) act.cfg.rows.remove(r)
+                else if (act.cfg.rows.size >= Config.MAX_ROWS) { act.toast("Up to ${Config.MAX_ROWS} rows"); return@add }
+                else act.cfg.rows.add(AppRow(k.name, 2, auto = k.key))
+                act.save(); act.home.rebuild(); refresh("rows")
+            }.apply {
+                checked = on
+                dimmed = !on
+            }
+        }
     }
 
     private fun paneLocks() {
-        paneHeader("Locked Apps", "Locked apps ask for a passcode during their hours. After the right code they stay open for 15 minutes.")
+        paneHeader("Locked Apps", "These ask for a passcode during their hours.")
         val locked = act.cfg.locked.entries.toList()
         if (locked.isEmpty()) { emptyState(R.drawable.ic_lock, "Hold OK on an app and choose Lock", 300f); return }
         val add = optionColumn(top1 + 20f, "locks")
@@ -1392,7 +1553,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         add(R.drawable.ic_schedule, "Also After Sleep", "", SettingRow.Trail.SWITCH) {
             cfg.startWake = !cfg.startWake; act.save(); refresh("start")
-        }.apply { checked = cfg.startWake; subtitle = "Opens it again when the TV wakes" }
+        }.checked = cfg.startWake
     }
 
     private fun paneHidden() {
@@ -1421,16 +1582,39 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     }
 
+    /** Watch With: one app feeds Continue watching, the spotlight, search and the library. */
+    private fun paneWatch() {
+        val now = Watch.source(act)
+        paneHeader("Watch With", "Continue watching, search and the library come from one app.")
+        pane.place(WatchPreview(act, now), 48f, top1, PANE_W - 96f, 128f)
+        val add = optionColumn(top1 + 152f, "watch")
+        for (s in Source.values()) {
+            choice(add, s.icon, s.label, s == now) {
+                if (s == Watch.source(act)) return@choice
+                val was = Watch.source(act)
+                val lose = if (Watch.signedIn(act) && !(was == Source.STREMIO && Demo.on)) "Scene signs out of ${was.label} on this TV" else ""
+                confirm("Watch with ${s.label}?", "Every profile on this TV changes over", "Use ${s.label}", s.icon, lose) {
+                    WatchSignIn.start(act, s)
+                }
+            }.apply {
+                brandIcon = true
+                // Stremio is the tested path; the server apps are newer.
+                pill = if (s == Source.STREMIO) "Recommended" else "Experimental"
+                pillAccent = s == Source.STREMIO
+            }
+        }
+    }
+
     private fun paneAccount() {
+        when (Watch.source(act)) {
+            Source.JELLYFIN -> { paneServerAccount(Source.JELLYFIN); return }
+            Source.PLEX -> { paneServerAccount(Source.PLEX); return }
+            Source.STREMIO -> {}
+        }
         if (!Stremio.signedIn(act)) {
             paneHeader("Stremio Account")
-            emptyState(R.drawable.ic_qr_code_2, "Sign in with your phone", top0 + 40f)
-            val b = PillButton(act, "Sign In", R.drawable.ic_qr_code_2, true)
-            b.tag = "acct0"
-            b.setOnClickListener { act.openSignIn() }
-            val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
-            row.addView(b, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
-            pane.place(row, 0f, top0 + 300f, PANE_W, 80f)
+            signedOutPane(R.drawable.ic_stremio, "Bring Stremio to Home", "Scan a code with your phone. No typing.",
+                "Sign In with Phone", R.drawable.ic_qr_code_2) { act.openSignIn() }
             return
         }
         val email = Stremio.email(act) ?: "Signed in"
@@ -1454,6 +1638,55 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         buttons.addView(out, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
         pane.place(buttons, 48f, top0 + 196f, PANE_W - 96f, 80f)
         Motion.stagger(listOf(card, buttons), 60L)
+    }
+
+    /** Jellyfin or Plex account: who and where, what it shows, and ways out. */
+    private fun paneServerAccount(src: Source) {
+        paneHeader("${src.label} Account")
+        if (!Watch.signedIn(act)) {
+            signedOutPane(src.icon, "Bring ${src.label} to Home", "Connect once and Scene keeps your progress in step.",
+                "Connect", R.drawable.ic_link) { WatchSignIn.start(act, src) }
+            return
+        }
+        val card = surfaceCard(48f, top0, PANE_W - 96f, 160f)
+        val logo = Panel(act, 48f, { Theme.elev }, false)
+        card.place(logo, 32f, 32f, 96f, 96f)
+        logo.place(ImageView(act).apply { setImageResource(src.icon) }, 20f, 20f, 56f, 56f)
+        card.place(act.label(Watch.account(act) ?: "Connected", 30f, Theme.TEXT, Theme.MEDIUM), 156f, 42f, PANE_W - 96f - 190f, 42f)
+        card.place(act.label("${act.continueItems.size} titles in progress", 24f, Theme.TEXT_DIM), 156f, 92f, 500f, 34f)
+        val add = optionColumn(top0 + 184f, "acct")
+        add(R.drawable.ic_sync, "Refresh Now", "", SettingRow.Trail.NONE) {
+            act.refreshContinue(force = true); act.toast("Refreshing your library")
+        }
+        if (src == Source.JELLYFIN) {
+            add(R.drawable.ic_skip_next, "Include Next Up", "", SettingRow.Trail.SWITCH) {
+                Jellyfin.setNextUp(act, !Jellyfin.nextUp(act))
+                act.refreshContinue(force = true); refresh("account")
+            }.checked = Jellyfin.nextUp(act)
+        } else {
+            add(R.drawable.ic_storage, "Server", Plex.serverName(act) ?: "", SettingRow.Trail.OPEN) { choosePlexServer() }
+        }
+        add(R.drawable.ic_logout, if (src == Source.PLEX) "Sign Out" else "Disconnect", "", SettingRow.Trail.NONE) {
+            confirm(if (src == Source.PLEX) "Sign out of Plex?" else "Disconnect from Jellyfin?", "For every profile on this TV", if (src == Source.PLEX) "Sign out" else "Disconnect",
+                R.drawable.ic_logout, "Continue watching comes from Stremio again") { act.signedOut(); refresh("account") }
+        }
+    }
+
+    /** Plex: moves to another server on the same account. */
+    private fun choosePlexServer() {
+        act.toast("Looking for servers")
+        Net.run({ Plex.otherServers(act) }) { list ->
+            if (list.isNullOrEmpty()) { act.toast("No other Plex servers on this account"); return@run }
+            val a = list.map { s ->
+                Sheet.Action(s.name, R.drawable.ic_storage, if (s.owned) "Your server" else "Shared with you", checked = s.name == Plex.serverName(act)) {
+                    Net.run({ Plex.reconnect(act, s) }) { ok ->
+                        if (ok == true) { act.sourceChanged(Source.PLEX); act.toast("Connected to ${s.name}"); refresh("account") }
+                        else act.toast("Couldn't reach ${s.name}")
+                    }
+                }
+            }
+            act.push(Sheet(act, "Plex server", "Continue watching and the library come from it", null, a))
+        }
     }
 
     private fun paneBackup(export: Boolean) {
@@ -1496,28 +1729,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     }
 
-    private fun paneSystem(title: String, inside: List<String>, action: String) {
-        paneHeader(title)
-        section("Inside", top0)
-        val col = cardColumn()
-        col.setPadding(Theme.ipx(32f), Theme.ipx(10f), Theme.ipx(32f), Theme.ipx(10f))
-        for ((i, s) in inside.withIndex()) {
-            col.addView(act.label(s, 26f, Theme.TEXT).apply { gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(-1, Theme.ipx(64f)))
-            if (i < inside.size - 1) col.addView(View(act).apply { setBackgroundColor(Theme.withAlpha(Theme.outline, 0.6f)) }, LinearLayout.LayoutParams(-1, Theme.ipx(1.5f)))
-        }
-        val h = 20f + inside.size * 64f + (inside.size - 1) * 1.5f
-        pane.place(col, 48f, top0 + 44f, PANE_W - 96f, h)
-        val open = PillButton(act, "Open", R.drawable.ic_open_in_new, true).apply {
-            tag = "sysopen"
-            setOnClickListener { act.openSystemSettings(action) }
-        }
-        pane.place(open, 48f, top0 + 44f + h + 36f, -1f, 80f)
-        Motion.stagger(listOf(col, open), 50L)
-    }
-
     /** Shows the support link as a QR code. */
     private fun paneKofi() {
-        paneHeader("Support Scene", "Scene is free and has no ads. If it earns its spot on your TV, a coffee keeps it growing.")
+        paneHeader("Support Scene", "Scene is free and ad-free. A coffee keeps it growing.")
         pane.place(KofiCard(), 48f, 212f, PANE_W - 96f, 452f)
         pane.place(centredText("Thank you for using Scene", 26f, Theme.TEXT_DIM), 48f, 692f, PANE_W - 96f, 36f)
     }
@@ -1580,14 +1794,11 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val am = act.getSystemService(ActivityManager::class.java)
         val mi = ActivityManager.MemoryInfo().also { am?.getMemoryInfo(it) }
         val own = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
-        // Device card: the device on the left, its name and versions on the right.
-        val device = DeviceCatalog.current()
+        // Device card: its name, then versions.
         val card = Panel(act, 36f, { Theme.surface })
         pane.place(card, 48f, top0, PANE_W - 96f, 300f)
-        // Text starts at the left edge when there is no photo for this device.
-        val tx = if (device.photo != 0) 322f else 40f
-        if (device.photo != 0) card.place(DeviceArt(act, device.photo), 16f, 16f, 290f, 268f)
-        card.place(act.label(device.name, 34f, Theme.accent, Theme.BOLD), tx, 44f, PANE_W - 96f - tx - 28f, 46f)
+        val tx = 40f
+        card.place(act.label(DeviceCatalog.name(), 34f, Theme.accent, Theme.BOLD), tx, 44f, PANE_W - 96f - tx - 28f, 46f)
         val facts = listOf(
             "Brand" to Build.BRAND.replaceFirstChar { it.uppercase() },
             "Android" to Build.VERSION.RELEASE,

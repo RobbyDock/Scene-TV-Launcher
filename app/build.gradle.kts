@@ -18,8 +18,8 @@ android {
         applicationId = "com.robbydock.scene"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.2.0"
     }
 
     // Signs release builds when local.properties has the release signing keys.

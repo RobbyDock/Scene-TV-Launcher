@@ -17,6 +17,8 @@
     <uses-feature android:name="android.hardware.location.network" android:required="false" />
     <!-- Lets the app menu start Android's uninstall confirmation. -->
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Updates from GitHub. Android still asks the user to confirm each install. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Recent apps opened outside Scene. The user allows it in Usage access. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
@@ -53,6 +55,7 @@
 
     <application
         android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:banner="@drawable/banner"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -100,6 +103,10 @@
                 <action android:name="com.robbydock.scene.CLEAR_PASSCODES" />
             </intent-filter>
         </receiver>
+        <!-- Android's installer reports update progress here. -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="false" />
         <!-- Clock screensaver. -->
         <service
             android:name=".ClockDream"

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search glass with a heavier stroke, to sit with the bolder Home type. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <path
+        android:pathData="M385,385m-215,0a215,215 0,1 1,430 0a215,215 0,1 1,-430 0"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="104" />
+    <path
+        android:pathData="M548,548L800,800"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="104"
+        android:strokeLineCap="round" />
+</vector>

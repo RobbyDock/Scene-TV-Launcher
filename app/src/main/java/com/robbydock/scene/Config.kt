@@ -8,8 +8,11 @@ import java.util.Locale
 
 class Pin(val pkg: String, val label: String)
 
-/** A row of apps the user made. [sort]: 0 custom, 1 A to Z, 2 most used, 3 last used. */
-class AppRow(var name: String, var sort: Int = 0, val apps: ArrayList<String> = ArrayList())
+/**
+ * A row of apps. [sort]: 0 custom, 1 A to Z, 2 most used, 3 last used. A ready-made row has an
+ * [auto] category and fills itself from installed apps; its [apps] then lists the ones taken out.
+ */
+class AppRow(var name: String, var sort: Int = 0, val apps: ArrayList<String> = ArrayList(), val auto: String = "")
 
 /** Launcher settings, stored as one small JSON file. The Stremio session is stored separately. */
 class Config {
@@ -17,7 +20,8 @@ class Config {
     var hidden = LinkedHashSet<String>()
     /** Continue watching entries hidden from Home, as "id|videoId". A new episode shows again. */
     var cwHidden = LinkedHashSet<String>()
-    var accent = 0
+    /** Rose by default. */
+    var accent = 1
     var trueDark = false
     var glass = 0.55f
     var clock = 0 // 0 system, 1 twelve hour, 2 twenty four hour
@@ -56,6 +60,10 @@ class Config {
     var startApp = ""
     /** Opens [startApp] again when the TV wakes from sleep. */
     var startWake = false
+    /** Library rows on Home: -1 follows the app (on for Jellyfin and Plex, off for Stremio), 0 off, 1 on. */
+    var libraryHome = -1
+    /** Library rows turned off, by key. */
+    var libraryOff = LinkedHashSet<String>()
     var city = ""
     var lat = Double.NaN
     var lon = Double.NaN
@@ -104,10 +112,12 @@ class Config {
             .put("names", JSONObject().apply { for ((k, v) in names) put(k, v) })
             .put("recents", JSONArray(recents))
             .put("recentsRemoved", JSONObject().apply { for ((k, v) in recentsRemoved) put(k, v) })
-            .put("rows", JSONArray().apply { for (r in rows) put(JSONObject().put("n", r.name).put("s", r.sort).put("a", JSONArray(r.apps))) })
+            .put("rows", JSONArray().apply { for (r in rows) put(JSONObject().put("n", r.name).put("s", r.sort).put("a", JSONArray(r.apps)).apply { if (r.auto.isNotEmpty()) put("c", r.auto) }) })
             .put("locked", JSONObject().apply { for ((k, v) in locked) put(k, v) })
             .put("startApp", startApp)
             .put("startWake", startWake)
+            .put("libraryHome", libraryHome)
+            .put("libraryOff", JSONArray(libraryOff.toList()))
             .put("city", city)
         if (hasLocation) o.put("lat", lat).put("lon", lon)
         return o
@@ -137,7 +147,7 @@ class Config {
             }
         }
         cwHidden = cw
-        accent = o.optInt("accent", 0).coerceIn(0, Theme.ACCENTS.size - 1)
+        accent = o.optInt("accent", 1).coerceIn(0, Theme.ACCENTS.size - 1)
         trueDark = o.optBoolean("trueDark", false)
         glass = o.optDouble("glass", 0.55).toFloat().coerceIn(Theme.GLASS_MIN, 1f)
         clock = o.optInt("clock", 0).coerceIn(0, 2)
@@ -180,7 +190,8 @@ class Config {
             for (i in 0 until minOf(a.length(), MAX_ROWS)) {
                 val r = a.optJSONObject(i) ?: continue
                 val name = Guard.cleanText(r.optString("n"), MAX_ROW_NAME)
-                if (name.isNotEmpty()) rs.add(AppRow(name, r.optInt("s", 0).coerceIn(0, 3), ArrayList(packages(r.optJSONArray("a"), MAX_ROW_APPS))))
+                if (name.isNotEmpty()) rs.add(AppRow(name, r.optInt("s", 0).coerceIn(0, 3), ArrayList(packages(r.optJSONArray("a"), MAX_ROW_APPS)),
+                    r.optString("c").takeIf { c -> AppCategory.KEYS.contains(c) } ?: ""))
             }
         }
         rows = rs
@@ -194,6 +205,10 @@ class Config {
         locked = lk
         startApp = o.optString("startApp", "").takeIf { Guard.isPackageName(it) } ?: ""
         startWake = o.optBoolean("startWake", false)
+        libraryHome = o.optInt("libraryHome", -1).coerceIn(-1, 1)
+        libraryOff = LinkedHashSet<String>().apply {
+            o.optJSONArray("libraryOff")?.let { a -> for (i in 0 until minOf(a.length(), 8)) a.optString(i).takeIf { it.length in 1..12 }?.let { add(it) } }
+        }
         city = Guard.cleanText(o.optString("city", ""), Limits.CITY)
         val la = o.optDouble("lat", Double.NaN)
         val lo = o.optDouble("lon", Double.NaN)

@@ -68,4 +68,27 @@ class RolesTest {
         val solo = profiles(true, false)
         assertTrue(Roles.othersWhoCanReset(solo, solo[0]).isEmpty())
     }
+
+    @Test fun kidsProfileCantBecomeAdmin() {
+        val l = profiles(true, false)
+        l[1].kids = true
+        assertFalse(Roles.setAdmin(l, l[1], true))
+        assertFalse(l[1].admin)
+    }
+
+    @Test fun ensureAdminSkipsKidsProfiles() {
+        val l = profiles(false, false)
+        l[0].kids = true
+        Roles.ensureAdmin(l)
+        assertFalse(l[0].admin)
+        assertTrue(l[1].admin)
+    }
+
+    @Test fun ensureAdminClearsKidsWhenOnlyKidsRemain() {
+        val l = profiles(false)
+        l[0].kids = true
+        Roles.ensureAdmin(l)
+        assertTrue(l[0].admin)
+        assertFalse(l[0].kids)
+    }
 }

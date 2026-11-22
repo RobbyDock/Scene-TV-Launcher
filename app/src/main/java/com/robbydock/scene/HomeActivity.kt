@@ -81,7 +81,7 @@ class HomeActivity : Activity() {
         online = now
         linkUp = link
         // Going offline re-checks the row against the cache age.
-        if (!now && was) setContinue(Stremio.cachedContinue(this, false))
+        if (!now && was) setContinue(Watch.cachedContinue(this, false))
         home.networkChanged(now, link, now != was)
         if (now == was) return
         if (now) {
@@ -145,7 +145,7 @@ class HomeActivity : Activity() {
         root.addView(home, FrameLayout.LayoutParams(-1, -1))
         NowPlaying.start(this)
         watchNetwork()
-        setContinue(Stremio.cachedContinue(this, online))
+        setContinue(Watch.cachedContinue(this, online))
         weather = Weather.cached(this)
         Stremio.pruneMeta(this)
         home.rebuild()
@@ -178,14 +178,18 @@ class HomeActivity : Activity() {
         syncLibrary()
         Net.main.postDelayed(syncTick, 20_000L)
         refreshWeather(force = false)
+        Updates.maybeCheck(this) { home.updateBadge() }
         ClockDream.select(this)
         // Picks up notification access granted while Scene was away.
         NowPlaying.start(this)
         // Recent apps may have changed while another app was open.
         if (cfg.showRecent) home.appsChanged()
+        if (overlays.isEmpty()) home.armIdle()
+        armSaver()
         (overlays.lastOrNull()?.first as? QuickPanel)?.onReturn()
         // Shows permissions granted in Android's settings at once.
         (overlays.lastOrNull()?.first as? SettingsScreen)?.onResumed()
+        (overlays.lastOrNull()?.first as? SetupScreen)?.onResumed()
         if (openOnWake) {
             openOnWake = false
             // Only when Home is what the TV wakes to, not when it is opened later.
@@ -200,8 +204,24 @@ class HomeActivity : Activity() {
         }
     }
 
+    /** Shows Scene's own screensaver over Home when Android won't start it. */
+    private val homeIdle = Runnable {
+        if (overlays.isEmpty() && hasWindowFocus() && ClockDream.isOn(this) && !ClockDream.isSelected(this)) push(SaverScreen(this))
+    }
+
+    private fun armSaver() {
+        Net.main.removeCallbacks(homeIdle)
+        Net.main.postDelayed(homeIdle, ClockDream.HOME_IDLE_MS)
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        armSaver()
+    }
+
     override fun onPause() {
         super.onPause()
+        Net.main.removeCallbacks(homeIdle)
         Net.main.removeCallbacks(syncTick)
     }
 
@@ -216,8 +236,8 @@ class HomeActivity : Activity() {
     /** Compares a small library fingerprint and fetches the full library only when it changed. */
     private fun syncLibrary() {
         if (!online || Demo.on) return
-        if (!Stremio.signedIn(this)) { refreshContinue(force = false); return }
-        Net.run({ Stremio.libraryStamp(this) }) { stamp ->
+        if (!Watch.signedIn(this)) { refreshContinue(force = false); return }
+        Net.run({ Watch.libraryStamp(this) }) { stamp ->
             if (isDestroyed) return@run
             when {
                 stamp == null -> refreshContinue(force = false, maxAge = 5 * 60_000L)
@@ -356,6 +376,9 @@ class HomeActivity : Activity() {
 
     interface Closable { fun onClosed() }
 
+    /** Closes any full app grid, so a move happens on Home where the app can be seen. */
+    fun closeAppGrids() { while (overlays.lastOrNull()?.first is AppGridScreen) pop() }
+
     /** Overlays told when the overlay above them closes. */
     interface Returnable { fun onReturn() }
 
@@ -370,6 +393,7 @@ class HomeActivity : Activity() {
         popTo(home)
         while (overlays.isNotEmpty()) pop()
         refreshWeather(force = true)
+        Library.refresh(this)
         home.goTop()
     }
 
@@ -433,6 +457,8 @@ class HomeActivity : Activity() {
         setContinue(allContinue)
         themeChanged()
         refreshWeather(force = true)
+        // A Kids profile starts on Home, with Settings and every other screen closed.
+        if (Profiles.current.kids) while (overlays.isNotEmpty()) pop()
         home.goTop()
         toast("Switched to ${Profiles.current.name}")
     }
@@ -491,7 +517,7 @@ class HomeActivity : Activity() {
         cfg = realCfg ?: Store.load(this) ?: cfg
         realCfg = null
         weather = Weather.cached(this)
-        setContinue(Stremio.cachedContinue(this, online))
+        setContinue(Watch.cachedContinue(this, online))
         applyNames()
         themeChanged()
         home.appsChanged()
@@ -504,6 +530,7 @@ class HomeActivity : Activity() {
     // ---------------------------------------------------------------- data
 
     fun loadApps() {
+        AppCategory.clear()
         val size = Theme.ipx(176f)
         Net.run({ Apps.listAll(this, size) }) { list ->
             if (list == null || isDestroyed) return@run
@@ -544,9 +571,12 @@ class HomeActivity : Activity() {
         return true
     }
 
+    /** The signed-out notice shows once per run. */
+    private var toldSignedOut = false
+
     fun refreshContinue(force: Boolean, maxAge: Long = 45_000L) {
         if (Demo.on) return
-        if (!Stremio.signedIn(this)) {
+        if (!Watch.signedIn(this)) {
             if (continueItems.isNotEmpty()) { setContinue(emptyList()); home.continueChanged() }
             return
         }
@@ -557,9 +587,12 @@ class HomeActivity : Activity() {
         lastContinueFetch = now
         continueLoading = continueItems.isEmpty()
         if (continueLoading) home.continueChanged()
-        Net.run({ Stremio.fetchContinue(this) }) { list ->
+        val from = Watch.source(this)
+        Net.run({ Watch.fetchContinue(this) }) { list ->
             if (isDestroyed) return@run
             continueLoading = false
+            // The app changed while this was loading.
+            if (from != Watch.source(this)) return@run
             if (list != null) {
                 continueError = false
                 // Keeps new-episode marks from the last check until the next one finishes.
@@ -568,14 +601,15 @@ class HomeActivity : Activity() {
                 val keepNew = allContinue.filter { it.isNew && list.none { l -> l.id == it.id } }
                 setContinue((kept + keepNew).sortedByDescending { it.lastWatched })
                 checkNewEpisodes(list)
+                Library.refresh(this)
+            } else if (Watch.signedOutByApp(this)) {
+                // The app ended Scene's sign-in, for example after a password change. Home says so
+                // where Continue watching was, and asks once; nothing pops up over what you're doing.
+                continueError = false
+                setContinue(emptyList())
+                if (!toldSignedOut) { toldSignedOut = true; toast("${Watch.name(this)} signed Scene out. Sign in again from Home.") }
             } else {
                 continueError = continueItems.isEmpty()
-                if (!Stremio.signedIn(this)) {
-                    // Stremio ended the session, for example after a password change.
-                    continueError = false
-                    setContinue(emptyList())
-                    if (overlays.none { it.first is SetupScreen || it.first is SignInScreen }) push(SignInScreen(this, expired = true))
-                }
             }
             home.continueChanged()
         }
@@ -606,7 +640,7 @@ class HomeActivity : Activity() {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_UP && event.repeatCount == 0 &&
             (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == android.view.KeyEvent.KEYCODE_ENTER) &&
-            currentFocus !is SoundPad) Sounds.ok(this)
+            currentFocus !is SoundPad) Sounds.ok()
         // OK sinks the focused item while it is held.
         if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == android.view.KeyEvent.KEYCODE_ENTER) {
             val f = currentFocus as? FocusView
@@ -660,6 +694,27 @@ class HomeActivity : Activity() {
         fetchWeather(force)
     }
 
+    /** The weather pill's sheet: five days ahead, and a way to the clock and weather settings. */
+    fun openForecast() {
+        val settings = Sheet.Action("Clock & Weather", R.drawable.ic_settings, "Location, units and what Home shows") { openSettings("clock") }
+        if (!cfg.hasLocation) { push(Sheet(this, "Weather", "No location set", null, listOf(settings))); return }
+        Net.run({ Weather.forecast(cfg.lat, cfg.lon) }) { days ->
+            if (isDestroyed) return@run
+            // Days come in the place's own time, so its first day is today there, whatever the TV's clock says.
+            val a = days.orEmpty().mapIndexed { i, d ->
+                val (cond, icon) = Weather.describe(d.code, true)
+                val name = when (i) {
+                    0 -> "Today"
+                    1 -> "Tomorrow"
+                    else -> d.date.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+                }
+                Sheet.Action("$name · $cond", icon, "${Weather.format(d.high, cfg.fahrenheit)} / ${Weather.format(d.low, cfg.fahrenheit)}", tint = Weather.tint(d.code, true)) { }
+            }
+            val sub = if (days == null) "Couldn't get the forecast" else cfg.city
+            push(Sheet(this, "Weather", sub, null, a + settings))
+        }
+    }
+
     private fun fetchWeather(force: Boolean) {
         if (!cfg.hasLocation) {
             val guess = Weather.timeZoneCity() ?: return
@@ -683,15 +738,28 @@ class HomeActivity : Activity() {
 
     fun signedOut() {
         if (Demo.on) { toast("Not available in Demo Mode"); return }
-        Stremio.signOut(this)
+        Watch.signOut(this)
+        Library.clear()
+        setContinue(Watch.cachedContinue(this, online))
+        home.rebuild()
+        refreshContinue(force = true)
+    }
+
+    /** After a sign-in to Jellyfin or Plex, or back to Stremio: everything reloads from it. */
+    fun sourceChanged(to: Source) {
+        Watch.switchTo(this, to)
+        allContinue = emptyList()
         setContinue(emptyList())
-        home.continueChanged()
+        libraryStamp = null
+        Library.clear()
+        home.rebuild()
+        refreshContinue(force = true)
     }
 
     /** Looks for new episodes of followed series at low priority, then updates the row once. */
     private fun checkNewEpisodes(base: List<CwItem>) {
         Net.low {
-            val merged = try { Stremio.withNewEpisodes(this, base) } catch (e: Exception) { null } ?: return@low
+            val merged = try { Watch.withNewEpisodes(this, base) } catch (e: Exception) { null } ?: return@low
             Net.main.post {
                 if (isDestroyed) return@post
                 setContinue(merged)
@@ -704,23 +772,26 @@ class HomeActivity : Activity() {
     private fun libraryWrite(working: String, work: () -> String) {
         if (Demo.on) { toast("Not available in Demo Mode"); return }
         toast(working)
-        Net.run({ try { work() } catch (e: Stremio.WriteFailed) { "Couldn't change it: ${e.message}" } }) { msg ->
+        Net.run({
+            try { work() } catch (e: Stremio.WriteFailed) { "Couldn't change it: ${e.message}" } catch (e: Watch.WriteFailed) { "Couldn't change it: ${e.message}" }
+        }) { msg ->
             if (isDestroyed) return@run
-            toast(msg ?: "Couldn't reach Stremio")
+            toast(msg ?: "Couldn't reach ${Watch.name(this)}")
             refreshContinue(force = true)
         }
     }
 
-    fun markWatched(item: CwItem) = libraryWrite("Marking as watched") { Stremio.markWatched(this, item) }
+    fun markWatched(item: CwItem) = libraryWrite("Marking as watched") { Watch.markWatched(this, item) }
 
     fun setNotify(item: CwItem, on: Boolean) = libraryWrite(if (on) "Turning on new episode alerts" else "Turning off new episode alerts") {
         Stremio.setNotify(this, item.id, on)
         if (on) "New episode alerts on" else "New episode alerts off"
     }
 
-    fun setInLibrary(item: CwItem, add: Boolean) = libraryWrite(if (add) "Adding to library" else "Removing from library") {
-        Stremio.setInLibrary(this, item.id, add)
-        if (add) "Added to your library" else "Removed from your library"
+    fun setInLibrary(item: CwItem, add: Boolean) = libraryWrite(if (add) "Adding" else "Removing") {
+        Watch.setInLibrary(this, item, add)
+        val where = Watch.libraryWords(this).third
+        if (add) "Added to $where" else "Removed from $where"
     }
 
     private var allContinue: List<CwItem> = emptyList()
@@ -896,8 +967,10 @@ class HomeActivity : Activity() {
     }
 
     fun openDetail(type: String, id: String, videoId: String? = null) {
-        if (!Apps.isInstalled(packageManager, Config.STREMIO)) { installStremio(); return }
-        if (start(Stremio.detailIntent(type, id, videoId), "Stremio is not installed")) noteRecent(Config.STREMIO)
+        val src = Watch.source(this)
+        if (!Watch.appInstalled(this)) { installApp(src); return }
+        // When the app doesn't take the link, it at least opens.
+        if (start(Watch.openIntent(this, type, id, videoId), "")) noteRecent(src.pkg) else launch(src.pkg)
     }
 
     /** Plays the title's trailer in Stremio. */
@@ -907,10 +980,13 @@ class HomeActivity : Activity() {
     }
 
     /** Opens Stremio's Play Store page so it can be installed. */
-    fun installStremio() {
-        toast("Stremio isn't installed. Opening the Play Store.")
-        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${Config.STREMIO}"))
-        if (!start(market, "")) start(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${Config.STREMIO}")), "The Play Store isn't available")
+    fun installStremio() = installApp(Source.STREMIO)
+
+    /** Opens the app's Play Store page so it can be installed. */
+    fun installApp(src: Source) {
+        toast("${src.label} isn't installed. Opening the Play Store.")
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${src.pkg}"))
+        if (!start(market, "")) start(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${src.pkg}")), "The Play Store isn't available")
     }
 
     /**
@@ -955,8 +1031,39 @@ class HomeActivity : Activity() {
     fun appInfo(pkg: String) = start(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
 
     fun openSearch(voice: Boolean) = push(SearchScreen(this, voice))
-    fun openSettings(focus: String? = null) = push(SettingsScreen(this, focus))
-    fun openSignIn() = push(SignInScreen(this))
+
+    /** Android's notification access page, which Now Playing needs. Some TVs have none, so this says how instead. */
+    fun openNotificationAccess() {
+        val i = Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        if (i.resolveActivity(packageManager) != null) start(i)
+        else push(Dialog(this, R.drawable.ic_music_note, "Not available on this TV",
+            "This TV has no way to allow it, so Now Playing can't show here. Everything else works as usual.",
+            listOf(Dialog.Button("OK", primary = true, focus = true))))
+    }
+    fun openSettings(focus: String? = null) {
+        if (Profiles.current.kids) { toast("Settings are off in Kids profiles"); return }
+        push(SettingsScreen(this, focus))
+    }
+
+    /** False in a Kids profile, which never shows the Spotlight. */
+    val spotlightOn get() = cfg.spotlight && !Profiles.current.kids
+
+    /**
+     * Asks for the passcode that lets the viewer switch to [p], then runs [go]. Leaving a Kids
+     * profile also takes any admin's passcode, and needs one even when [p] has none. With no admin
+     * passcode set, nobody can get stuck in Kids.
+     */
+    fun codeToSwitch(p: Profile, go: () -> Unit) {
+        val leavingKids = Profiles.current.kids && !p.kids
+        val admins = if (leavingKids) Profiles.lockedAdmins() else emptyList()
+        val who = when {
+            p.locked -> p
+            leavingKids -> admins.firstOrNull()
+            else -> null
+        } ?: return go()
+        push(PasscodeScreen(this, who, PasscodeScreen.Mode.CHECK, admins.filter { it !== who }) { go() })
+    }
+    fun openSignIn() = push(SignInScreen(this, expired = Watch.signedOutByApp(this)))
 
     fun withMicPermission(done: (Boolean) -> Unit) = withPermission(Manifest.permission.RECORD_AUDIO, done)
 
@@ -1074,7 +1181,7 @@ class HomeActivity : Activity() {
             rename(pkg, null)
         })
         if (fromGrid) {
-            a.add(Sheet.Action("Move", R.drawable.ic_drag_indicator, "Pick it up, move with the arrows, press OK to drop") { home.startMove(true, pkg) })
+            a.add(Sheet.Action("Move", R.drawable.ic_drag_indicator, "Pick it up, move with the arrows, press OK to drop") { closeAppGrids(); home.startMove(true, pkg) })
             a.add(Sheet.Action("Sort All apps", R.drawable.ic_sort_by_alpha, arrayOf("A to Z", "Recently installed", "Custom")[cfg.appSort]) { sortMenu() })
         }
         if (isPinned(pkg)) {
@@ -1126,38 +1233,42 @@ class HomeActivity : Activity() {
 
     /** Long-press menu for a Continue watching card. */
     fun continueMenu(item: CwItem) {
-        val meta = Stremio.cachedMeta(item.id)
+        val meta = Watch.cachedMeta(item.id)
+        val src = Watch.source(this)
+        val app = src.label
+        val stremio = src == Source.STREMIO
+        val has = Watch.appInstalled(this)
         val a = ArrayList<Sheet.Action>()
         val where = if (item.season != null) "S${item.season} E${item.episode}" else "the film"
         val series = item.type == "series"
-        if (!Apps.isInstalled(packageManager, Config.STREMIO)) {
-            a.add(Sheet.Action("Get Stremio", R.drawable.ic_shop, "Install Stremio from the Play Store to watch") { installStremio() })
+        if (!has) {
+            a.add(Sheet.Action("Get $app", R.drawable.ic_shop, "Install $app from the Play Store to watch") { installApp(src) })
         } else if (item.started) {
-            a.add(Sheet.Action("Resume", R.drawable.ic_play_arrow, "Carry on with $where in Stremio") { openDetail(item.type, item.id, item.videoId) })
+            a.add(Sheet.Action("Resume", R.drawable.ic_play_arrow, "Carry on with $where in $app") { openDetail(item.type, item.id, item.videoId) })
         } else {
-            a.add(Sheet.Action(if (item.isNew) "Play new episode" else "Play", R.drawable.ic_play_arrow, "Start $where in Stremio") { openDetail(item.type, item.id, item.videoId) })
+            a.add(Sheet.Action(if (item.isNew) "Play new episode" else "Play", R.drawable.ic_play_arrow, "Start $where in $app") { openDetail(item.type, item.id, item.videoId) })
         }
-        val next = meta?.let { Stremio.nextVideo(it, item) }
-        if (next != null && item.started && Apps.isInstalled(packageManager, Config.STREMIO)) a.add(Sheet.Action("Next episode", R.drawable.ic_skip_next, "S${next.season} E${next.episode}" + (next.title.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")) { openDetail(item.type, item.id, next.id) })
-        if (Stremio.signedIn(this)) {
+        val next = meta?.let { Watch.nextVideo(it, item) }
+        if (next != null && item.started && has) a.add(Sheet.Action("Next episode", R.drawable.ic_skip_next, "S${next.season} E${next.episode}" + (next.title.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")) { openDetail(item.type, item.id, next.id) })
+        if (Watch.signedIn(this)) {
             a.add(Sheet.Action(if (series) "Mark episode watched" else "Mark as watched", R.drawable.ic_check_circle,
-                if (series) "Ticks $where in Stremio and moves on to the next episode" else "Counts as watched in Stremio and leaves Continue watching") { markWatched(item) })
-            if (item.inLibrary) {
-                a.add(Sheet.Action("Remove from library", R.drawable.ic_bookmark_added, "Removes it from your Stremio library and Continue watching") { setInLibrary(item, false) })
-            } else {
-                a.add(Sheet.Action("Add to library", R.drawable.ic_bookmark_add, "Keeps it in your Stremio library" + if (series) " and tells you about new episodes" else "") { setInLibrary(item, true) })
+                if (series) "Ticks $where in $app" + (if (stremio) " and moves on to the next episode" else "") else "Counts as watched in $app and leaves Continue watching") { markWatched(item) })
+            val (add, remove, place) = Watch.libraryWords(this)
+            if (Watch.hasLibrary(this)) {
+                if (item.inLibrary) a.add(Sheet.Action(remove, R.drawable.ic_bookmark_added, "Removes it from $place" + if (stremio) " and Continue watching" else "") { setInLibrary(item, false) })
+                else a.add(Sheet.Action(add, R.drawable.ic_bookmark_add, "Keeps it in $place" + if (stremio && series) " and tells you about new episodes" else "") { setInLibrary(item, true) })
             }
             // The Cinema spotlight has no alerts button, so the choice lives here.
-            if (Theme.CINEMA && series && item.inLibrary) {
+            if (stremio && Theme.CINEMA && series && item.inLibrary) {
                 if (item.notify) a.add(Sheet.Action("Stop new episode alerts", R.drawable.ic_notifications_active, "No more alerts for new episodes") { setNotify(item, false) })
                 else a.add(Sheet.Action("Get new episode alerts", R.drawable.ic_notifications_off, "Tells you when a new episode is out") { setNotify(item, true) })
             }
         }
-        if (series) a.add(Sheet.Action("Episode list", R.drawable.ic_list, "All seasons and episodes in Stremio") { openDetail(item.type, item.id) })
-        else a.add(Sheet.Action("Details", R.drawable.ic_info, "Cast, streams and more in Stremio") { openDetail(item.type, item.id) })
-        meta?.trailer?.let { yt -> a.add(Sheet.Action("Trailer", R.drawable.ic_movie, "Plays in Stremio") { openTrailer(yt, item.name) }) }
+        if (series) a.add(Sheet.Action("Episode list", R.drawable.ic_list, "All seasons and episodes in $app") { openDetail(item.type, item.id) })
+        else a.add(Sheet.Action("Details", R.drawable.ic_info, "Cast, streams and more in $app") { openDetail(item.type, item.id) })
+        if (stremio) meta?.trailer?.let { yt -> a.add(Sheet.Action("Trailer", R.drawable.ic_movie, "Plays in Stremio") { openTrailer(yt, item.name) }) }
         a.add(Sheet.Action("Hide from Continue watching", R.drawable.ic_visibility_off, "Only on this TV, until you watch more of it") { hideContinue(item) })
-        a.add(Sheet.Action("Refresh library", R.drawable.ic_sync, "Fetch the latest progress from Stremio") { refreshContinue(force = true); toast("Refreshing your library") })
+        a.add(Sheet.Action("Refresh library", R.drawable.ic_sync, "Fetch the latest progress from $app") { refreshContinue(force = true); toast("Refreshing your library") })
         val sub = buildList {
             add(if (series) "Series" else "Film")
             meta?.year?.takeIf { it.isNotEmpty() }?.let { add(it) }

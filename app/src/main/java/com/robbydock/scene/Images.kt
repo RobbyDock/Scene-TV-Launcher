@@ -34,8 +34,11 @@ object Images {
 
     fun cached(url: String, width: Int): Bitmap? = mem.get(key(url, width))
 
-    /** Loads [url] decoded to roughly [width] pixels wide. Callbacks run on the main thread. */
-    fun load(url: String?, width: Int, opaque: Boolean = true, done: (Bitmap?) -> Unit) {
+    /**
+     * Loads [url] decoded to [width] pixels wide. Callbacks run on the main thread. [exact] false
+     * keeps up to twice the width, for art drawn larger than asked, such as the full-screen backdrop.
+     */
+    fun load(url: String?, width: Int, opaque: Boolean = true, exact: Boolean = true, done: (Bitmap?) -> Unit) {
         if (url.isNullOrEmpty()) { done(null); return }
         val k = key(url, width)
         mem.get(k)?.let { done(it); return }
@@ -43,7 +46,7 @@ object Images {
             inFlight[k]?.let { it.add(done); return }
             inFlight[k] = mutableListOf(done)
         }
-        Net.run({ fetch(url, width, opaque) }) { bmp ->
+        Net.run({ fetch(url, width, opaque, exact) }) { bmp ->
             if (bmp != null) mem.put(k, bmp)
             val waiting = synchronized(inFlight) { inFlight.remove(k) } ?: emptyList()
             for (cb in waiting) cb(bmp)
@@ -71,7 +74,7 @@ object Images {
         return f
     }
 
-    private fun fetch(url: String, width: Int, opaque: Boolean): Bitmap? {
+    private fun fetch(url: String, width: Int, opaque: Boolean, exact: Boolean): Bitmap? {
         val f = file(url) ?: return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(f.path, bounds)
@@ -80,6 +83,9 @@ object Images {
         val opts = BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = if (opaque) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+            // Halving can leave up to twice the asked width. Opaque art is scaled the rest of the way.
+            val sampled = bounds.outWidth / sample
+            if (opaque && exact && sampled > width) { inScaled = true; inDensity = sampled; inTargetDensity = width }
         }
         return BitmapFactory.decodeFile(f.path, opts)
     }

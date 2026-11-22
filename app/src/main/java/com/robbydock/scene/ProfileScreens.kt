@@ -16,7 +16,9 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
 
     init {
         // One row up to five tiles, then two centred rows with smaller avatars. The Add tile counts.
-        val canAdd = Profiles.list.size < Profiles.MAX
+        // A Kids profile can't add profiles or open Settings from here.
+        val kids = Profiles.current.kids
+        val canAdd = Profiles.list.size < Profiles.MAX && !kids
         val rows = Guard.pickerRows(Profiles.list.size + if (canAdd) 1 else 0)
         val two = rows.size > 1
         val size = if (two) 160f else 200f
@@ -67,24 +69,25 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
             pops.add(add)
             caption("Add profile", Theme.TEXT_DIM, x, y)
         }
-        val manage = PillButton(act, "Manage profiles", R.drawable.ic_settings, false).apply {
-            setOnClickListener { act.pop(); act.openSettings("profile") }
+        if (!kids) {
+            val manage = PillButton(act, "Manage profiles", R.drawable.ic_settings, false).apply {
+                setOnClickListener { act.pop(); act.openSettings("profile") }
+            }
+            val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
+            row.addView(manage, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
+            place(row, 0f, if (two) 900f else 830f, Theme.W, 80f)
         }
-        val row = LinearLayout(act).apply { gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false }
-        row.addView(manage, LinearLayout.LayoutParams(-2, Theme.ipx(80f)))
-        place(row, 0f, if (two) 900f else 830f, Theme.W, 80f)
         pops.forEachIndexed { i, v -> Motion.pop(v, 80L + i * 50L) }
         post { focus?.requestFocus() }
     }
 
     private fun pick(p: Profile) {
         if (p.id == Profiles.currentId) { act.pop(); return }
-        if (!p.locked) { act.pop(); act.switchProfile(p.id); return }
-        act.push(PasscodeScreen(act, p, PasscodeScreen.Mode.CHECK) { _ ->
+        act.codeToSwitch(p) {
             act.popTo(this)
             act.pop()
             act.switchProfile(p.id)
-        })
+        }
     }
 }
 
@@ -94,7 +97,10 @@ class ProfilePicker(act: HomeActivity) : OverlayBase(act, 0.78f, haze = true) {
  */
 @SuppressLint("ViewConstructor")
 class PasscodeScreen(
-    act: HomeActivity, private val profile: Profile, private val mode: Mode, private val done: (String) -> Unit,
+    act: HomeActivity, private val profile: Profile, private val mode: Mode,
+    /** Other profiles whose passcode also passes a check: the admins, when leaving a Kids profile. */
+    private val alsoAccept: List<Profile> = emptyList(),
+    private val done: (String) -> Unit,
 ) : OverlayBase(act, 1f) {
 
     enum class Mode { CHECK, SET }
@@ -163,7 +169,9 @@ class PasscodeScreen(
             wait > 0 -> "Too many tries. Try again in ${clock(wait)}."
             mode == Mode.SET && first != null -> "Enter it again to confirm"
             mode == Mode.SET -> "Choose ${Profiles.CODE_LEN} arrow presses"
-            else -> "Enter passcode"
+            alsoAccept.isEmpty() -> "Enter passcode"
+            profile.admin -> "Enter an admin's passcode"
+            else -> "Enter this passcode or an admin's"
         }
         prompt.setTextColor(if (wait > 0) Theme.accent else Theme.TEXT_DIM)
     }
@@ -218,7 +226,7 @@ class PasscodeScreen(
         val code = entered.toString()
         entered.clear()
         when (mode) {
-            Mode.CHECK -> if (Profiles.checkCode(profile, code)) {
+            Mode.CHECK -> if (Profiles.checkCode(profile, code) || alsoAccept.any { Profiles.checkCode(it, code) }) {
                 Locks.right(act, profile.id)
                 done(code)
             } else {
