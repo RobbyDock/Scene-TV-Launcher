@@ -50,7 +50,9 @@ object NewlyPopular {
     private var generation = 0
     /** Window and kinds [ready] was loaded for. Another profile's choice loads afresh. */
     private var readyKey = ""
-    private val pages = HashMap<String, Pair<Long, List<Title>>>()
+    /** One source page: its titles, and whether the source has more after it. */
+    private class Page(val titles: List<Title>, val more: Boolean)
+    private val pages = HashMap<String, Pair<Long, Page>>()
     private val lookups = Executors.newFixedThreadPool(3) { r -> Thread(r, "scene-newpop").apply { isDaemon = true } }
 
     /** Poster link for [t]. Anime asks the Kitsu addon, which may block, so call it off the main thread. */
@@ -104,8 +106,11 @@ object NewlyPopular {
         if (!unseenOnly) return list
         val seen = seenIds(act)
         // Filter each kind on its own, then take turns again, so the mix stays even.
-        return takeTurns(KINDS.map { k -> list.filter { it.kind == k && it.id !in seen && it.names.none { n -> NAME + n in seen } } })
+        return takeTurns(KINDS.map { k -> list.filter { it.kind == k && !seenIn(it, seen) } })
     }
+
+    /** True when [t] is in [seen], by id or by title. */
+    fun seenIn(t: Title, seen: Set<String>) = t.id in seen || t.names.any { NAME + it in seen }
 
     /** Merges [lists] one item from each in turn. */
     fun takeTurns(lists: List<List<Title>>): List<Title> {
@@ -122,34 +127,83 @@ object NewlyPopular {
     fun nameKey(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
     /** Ids and title keys in the library, saved or watched. Demo Mode uses its own titles. */
-    private fun seenIds(act: HomeActivity): Set<String> =
+    fun seenIds(act: HomeActivity): Set<String> =
         if (Demo.on) (act.continueItems.flatMap { listOf(it.id, NAME + nameKey(it.name)) } +
             Demo.shelf("yours", 0, 0, 1000).flatMap { listOf(it.id, NAME + nameKey(it.name)) }).toSet()
         else Stremio.seenIds
 
+    /** Best rated first, unrated last, then the most popular. */
+    val BEST = compareByDescending<Title> { it.rating > 0f }.thenByDescending { it.rating }.thenByDescending { it.pop }
+
     /**
-     * Titles released in the last [months] for the kinds in [mask]: each kind best rated first, then
-     * taking turns. The Home row keeps each kind's most popular share; [full] keeps every title and
-     * reads deeper, for See all.
+     * Titles released in the last [months] for the kinds in [mask]: each kind's most popular share,
+     * best rated first, then taking turns.
      */
-    fun list(months: Int, mask: Int, full: Boolean = false): List<Title> {
+    fun list(months: Int, mask: Int): List<Title> {
         val now = System.currentTimeMillis()
         val from = Calendar.getInstance().apply { add(Calendar.MONTH, -months) }
         val years = listOf(from.get(Calendar.YEAR), Calendar.getInstance().get(Calendar.YEAR)).distinct()
         val start = from.timeInMillis
         val jobs = kinds(mask).map { k ->
-            if (k == ANIME) seasonsSince(from).flatMap { (y, season) -> (0 until if (full) 8 else 4).map { o -> lookups.submit(Callable { animePage(y, season, o * 20) }) } }
-            else years.flatMap { y -> (0 until if (full) 6 else 3).map { s -> lookups.submit(Callable { page(k, y, s * 50) }) } }
+            if (k == ANIME) seasonsSince(from).flatMap { (y, season) -> (0 until 4).map { o -> lookups.submit(Callable { animePage(y, season, o * 20) }) } }
+            else years.flatMap { y -> (0 until 3).map { s -> lookups.submit(Callable { page(k, y, s * 50) }) } }
         }
         val lists = jobs.map { pages ->
-            val fresh = pages.flatMap { try { it.get() } catch (e: Exception) { emptyList() } }
+            val fresh = pages.flatMap { try { it.get().titles } catch (e: Exception) { emptyList() } }
                 .filter { it.released in start..now }.distinctBy { it.id }.sortedByDescending { it.pop }
-            // The most popular share, best rated first.
-            (if (full) fresh else fresh.take(maxOf(MIN_KEPT, Math.ceil(fresh.size * SHARE).toInt())))
-                .sortedWith(compareByDescending<Title> { it.rating > 0f }.thenByDescending { it.rating }.thenByDescending { it.pop })
+            fresh.take(maxOf(MIN_KEPT, Math.ceil(fresh.size * SHARE).toInt())).sortedWith(BEST)
         }
         // The kinds take turns, so each gets the same share of the row.
         return takeTurns(lists)
+    }
+
+    /**
+     * Every title released in the last [months] for the kinds in [mask], read page by page for See all
+     * until each source runs out. Sources are read most popular first, so each batch is less popular
+     * than the one before. Not thread safe: call [next] from one thread at a time.
+     */
+    class Feed(months: Int, mask: Int) {
+        private class Source(val kind: String, val year: Int, val season: String?) { var next = 0; var done = false }
+        private val start: Long
+        private val sources: List<Source>
+        private val ids = HashSet<String>()
+        /** True when every source has run out. */
+        val done get() = sources.all { it.done }
+
+        init {
+            val from = Calendar.getInstance().apply { add(Calendar.MONTH, -months) }
+            start = from.timeInMillis
+            val years = listOf(from.get(Calendar.YEAR), Calendar.getInstance().get(Calendar.YEAR)).distinct()
+            sources = kinds(mask).flatMap { k ->
+                if (k == ANIME) seasonsSince(from).map { (y, s) -> Source(k, y, s) } else years.map { Source(k, it, null) }
+            }
+        }
+
+        /**
+         * Reads up to [count] more pages from every source with more, and returns the new titles in the
+         * window by kind, in [KINDS] order, most popular first. Blocks, so call it off the main thread.
+         * A failed page is read again next time. Throws when no source answers.
+         */
+        fun next(count: Int): List<List<Title>> {
+            val now = System.currentTimeMillis()
+            val jobs = sources.filter { !it.done }.map { s ->
+                s to (0 until count).map { i ->
+                    val at = s.next + i
+                    lookups.submit(Callable { if (s.season != null) animePage(s.year, s.season, at * 20) else page(s.kind, s.year, at * 50) })
+                }
+            }
+            val got = HashMap<String, ArrayList<Title>>()
+            var answered = false
+            for ((s, pages) in jobs) for (p in pages) {
+                val page = try { p.get() } catch (e: Exception) { null } ?: break
+                answered = true
+                s.next++
+                got.getOrPut(s.kind) { ArrayList() }.addAll(page.titles.filter { it.released in start..now && ids.add(it.id) })
+                if (!page.more) { s.done = true; break }
+            }
+            if (jobs.isNotEmpty() && !answered) throw java.io.IOException("No source answered")
+            return KINDS.map { k -> got[k].orEmpty().sortedByDescending { it.pop } }
+        }
     }
 
     /** Kitsu seasons that overlap the window from [from] to now, as year and season. */
@@ -162,7 +216,7 @@ object NewlyPopular {
     }
 
     /** One page of a Kitsu season, most watched first, kept for 12 hours. Adult titles and sequels stay out. */
-    private fun animePage(year: Int, season: String, offset: Int): List<Title> {
+    private fun animePage(year: Int, season: String, offset: Int): Page {
         val key = "kitsu:$year:$season:$offset"
         synchronized(pages) { pages[key]?.let { if (System.currentTimeMillis() - it.first < FRESH) return it.second } }
         val url = KITSU_API + "anime?filter%5BseasonYear%5D=$year&filter%5Bseason%5D=$season&sort=-userCount" +
@@ -170,7 +224,7 @@ object NewlyPopular {
             "&fields%5Banime%5D=canonicalTitle,titles,startDate,averageRating,userCount,subtype,ageRating,nsfw,mediaRelationships" +
             "&include=mediaRelationships&fields%5BmediaRelationships%5D=role"
         val json = Net.getJson(url)
-        val arr = json.optJSONArray("data") ?: return emptyList()
+        val arr = json.optJSONArray("data") ?: return Page(emptyList(), false)
         // A title with a prequel or a parent story is a later season or a side story.
         val later = HashSet<String>()
         json.optJSONArray("included")?.let { inc ->
@@ -198,16 +252,17 @@ object NewlyPopular {
             out.add(Title("kitsu:" + x.optString("id"), if (film) "movie" else "series", name, null, released, rating,
                 a.optDouble("userCount", 0.0), ANIME, film, names))
         }
-        synchronized(pages) { pages[key] = System.currentTimeMillis() to out }
-        return out
+        val page = Page(out, arr.length() >= 20)
+        synchronized(pages) { pages[key] = System.currentTimeMillis() to page }
+        return page
     }
 
     /** One page of a year catalogue, kept for 12 hours. Shorts and trailers stay out. */
-    private fun page(type: String, year: Int, skip: Int): List<Title> {
+    private fun page(type: String, year: Int, skip: Int): Page {
         val key = "$type:$year:$skip"
         synchronized(pages) { pages[key]?.let { if (System.currentTimeMillis() - it.first < FRESH) return it.second } }
         val url = CINEMETA + "catalog/$type/year/genre=$year" + (if (skip > 0) "&skip=$skip" else "") + ".json"
-        val arr = Net.getJson(url).optJSONArray("metas") ?: return emptyList()
+        val arr = Net.getJson(url).optJSONArray("metas") ?: return Page(emptyList(), false)
         val out = ArrayList<Title>()
         for (i in 0 until arr.length()) {
             val m = arr.optJSONObject(i) ?: continue
@@ -222,7 +277,8 @@ object NewlyPopular {
             out.add(Title(id, type, m.optString("name", id), m.optString("poster").ifEmpty { null }, released,
                 m.optString("imdbRating").toFloatOrNull() ?: 0f, pop))
         }
-        synchronized(pages) { pages[key] = System.currentTimeMillis() to out }
-        return out
+        val page = Page(out, arr.length() > 0)
+        synchronized(pages) { pages[key] = System.currentTimeMillis() to page }
+        return page
     }
 }

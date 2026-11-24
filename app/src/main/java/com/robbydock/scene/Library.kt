@@ -281,7 +281,9 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
     private var collapsed = false
     private var closed = false
     private var gen = 0
-    private var titles = emptyList<NewlyPopular.Title>()
+    private var feed: NewlyPopular.Feed? = null
+    private var fetching = false
+    private var seen = emptySet<String>()
     private var added = 0
 
     private companion object {
@@ -292,7 +294,10 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
         const val EDGE = 96f
         const val TOP = 268f
         val SORTS = listOf("Top rated", "Popular", "Newest")
-        const val PAGE = 70
+        /** Least new cards a read adds, so the grid always grows past the screen. */
+        const val BATCH = 40
+        /** Most rounds of source pages one read takes, when the window holds few titles. */
+        const val ROUNDS = 12
     }
 
     init {
@@ -345,48 +350,67 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
         post { if (!closed) bar.getChildAt(focus)?.requestFocus() }
     }
 
-    /** Loads the window's titles for every kind, then filters, orders and lays them out. */
+    /** Starts the grid afresh for the chosen kind and window, then reads the first batch. */
     private fun fill() {
-        val g = ++gen
+        gen++
         grid.removeAllViews()
+        added = 0
+        fetching = false
         scroller.scrollTo(0, 0)
         collapse(false)
         note.text = "Loading"
-        val m = NewlyPopular.MONTHS[months]
-        Net.run({ NewlyPopular.list(m, 7, full = true) }) { all ->
-            if (closed || g != gen) return@run
-            var list = if (unseen) NewlyPopular.visible(act, all ?: emptyList(), true) else all ?: emptyList()
-            if (kind >= 0) list = list.filter { it.kind == NewlyPopular.KINDS[kind] }
-            list = when (sort) {
-                // Popularity counts differ by source, so each kind is ordered on its own and they take turns.
-                1 -> NewlyPopular.takeTurns(NewlyPopular.KINDS.map { k -> list.filter { it.kind == k }.sortedByDescending { it.pop } })
-                2 -> list.sortedByDescending { it.released }
-                else -> list
-            }
-            note.text = when {
-                all == null -> "Couldn't load titles"
-                list.isEmpty() -> "Nothing here. Try a longer window."
-                else -> ""
-            }
-            show(list)
-        }
-    }
-
-    private fun show(list: List<NewlyPopular.Title>) {
-        titles = list
-        added = 0
+        seen = if (unseen) NewlyPopular.seenIds(act) else emptySet()
+        feed = NewlyPopular.Feed(NewlyPopular.MONTHS[months], if (kind < 0) 7 else 1 shl kind)
         more()
     }
 
-    /** Adds the next page of cards; focus near the end adds another. */
+    /**
+     * Reads source pages until at least [BATCH] new titles pass the filters, then adds them as cards.
+     * Each batch is ordered on its own and goes after the cards already shown, so nothing moves. Focus
+     * near the end reads the next batch, until the window runs out.
+     */
     private fun more() {
-        val end = minOf(titles.size, added + PAGE)
-        for (i in added until end) {
-            val t = titles[i]
+        val f = feed ?: return
+        if (fetching || f.done) return
+        fetching = true
+        val g = gen
+        val first = added == 0
+        val s = seen
+        Net.run({
+            val byKind = NewlyPopular.KINDS.map { ArrayList<NewlyPopular.Title>() }
+            var rounds = 0
+            while (byKind.sumOf { it.size } < BATCH && !f.done && rounds++ < ROUNDS)
+                for ((i, l) in f.next(if (first) 3 else 2).withIndex()) byKind[i].addAll(l.filter { !NewlyPopular.seenIn(it, s) })
+            when (sort) {
+                // Popularity counts differ by source, so each kind is ordered on its own and they take turns.
+                0 -> NewlyPopular.takeTurns(byKind.map { it.sortedWith(NewlyPopular.BEST) })
+                1 -> NewlyPopular.takeTurns(byKind)
+                else -> byKind.flatten().sortedByDescending { it.released }
+            }
+        }) { batch ->
+            if (closed || g != gen) return@run
+            fetching = false
+            if (batch != null) add(batch)
+            note.text = when {
+                added > 0 -> ""
+                batch == null -> "Couldn't load titles"
+                f.done -> "Nothing here. Try a longer window."
+                else -> "Loading"
+            }
+            // A read that found nothing new reads on, unless the window ran out.
+            if (batch != null && batch.isEmpty() && !f.done) more()
+        }
+    }
+
+    /** Adds [batch] as cards after the ones shown. */
+    private fun add(batch: List<NewlyPopular.Title>) {
+        val from = added
+        for ((j, t) in batch.withIndex()) {
+            val i = from + j
             val card = act.home.bindNew(PosterCard(act), t)
             card.setOnFocusChangeListener { _, has ->
                 if (!has) return@setOnFocusChangeListener
-                if (i >= added - cols * 2) more()
+                if (i >= added - cols * 3) more()
                 if (i < cols) scroller.smoothScrollTo(0, 0)
             }
             // Up from the top row goes to the pills, even while they slide back in.
@@ -401,7 +425,7 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
             })
             Motion.pop(card, (i % cols) * 18L)
         }
-        added = end
+        added += batch.size
         grid.minimumHeight = Theme.ipx(TOP + ((added + cols - 1) / cols) * (ph + GY) + 120f)
     }
 
