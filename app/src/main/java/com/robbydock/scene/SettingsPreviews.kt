@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
@@ -928,6 +929,88 @@ class CategoryPreview(private val act: HomeActivity) : View(act) {
                     c.drawRoundRect(box, ir, ir, fill)
                 }
             }
+        }
+    }
+}
+
+/** Focus Style preview: three Home cards, the middle one focused in the chosen style. */
+class FocusPreview(ctx: Context) : View(ctx) {
+    var style = 0
+        set(v) { if (field != v) { field = v; invalidate() } }
+    var labelsAll = false
+        set(v) { if (field != v) { field = v; invalidate() } }
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val title = textPaint(20f, Color.WHITE, Theme.SEMIBOLD)
+    private val names = arrayOf("Arrival", "The Bear", "Severance")
+    /** Names and art from Home's Continue watching. Missing art falls back to a tinted card. */
+    var samples: List<Pair<String, Bitmap?>> = emptyList()
+        set(v) { field = v; invalidate() }
+    private val bmp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val clip = Path()
+    private val src = Rect()
+    private val scrim = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        p.shader = null
+        p.color = Theme.surface
+        c.drawRoundRect(0f, 0f, w, h, Theme.px(Theme.R_CARD), Theme.px(Theme.R_CARD), p)
+        val cw = w * 0.27f
+        val ch = cw * 189f / 336f
+        val gap = cw * 0.1f
+        val x0 = (w - 3 * cw - 2 * gap) / 2
+        val rad = cw * 22f / 336f
+        val tones = intArrayOf(Theme.mix(Theme.elev, Theme.accent, 0.35f), Theme.mix(Theme.elev, Theme.duo(Theme.accent), 0.55f), Theme.mix(Theme.elev, Color.BLACK, 0.2f))
+        for (i in 0 until 3) {
+            val hot = i == 1
+            val s = if (!hot) 1f else if (style == 0) 1.04f else Theme.FOCUS_SCALE
+            val lift = if (hot && style == 0) Theme.px(8f) else 0f
+            val cx = x0 + i * (cw + gap) + cw / 2
+            val cy = h / 2 - lift
+            c.save()
+            c.scale(s, s, cx, cy)
+            val l = cx - cw / 2; val t = cy - ch / 2; val r = cx + cw / 2; val b = cy + ch / 2
+            if (hot && style == 2) {
+                glow.color = Theme.withAlpha(Theme.accent, 0.7f)
+                glow.setShadowLayer(Theme.px(30f), 0f, Theme.px(14f), Theme.withAlpha(Theme.accent, 0.7f))
+                c.drawRoundRect(l, t, r, b, rad, rad, glow)
+            }
+            val art = samples.getOrNull(i)?.second
+            if (art != null) {
+                // Centre crop to the card, as on Home.
+                val target = cw / ch
+                if (art.width.toFloat() / art.height > target) { val sw = (art.height * target).toInt(); src.set((art.width - sw) / 2, 0, (art.width + sw) / 2, art.height) }
+                else { val sh = (art.width / target).toInt(); src.set(0, (art.height - sh) / 4, art.width, (art.height - sh) / 4 + sh) }
+                clip.reset(); clip.addRoundRect(l, t, r, b, rad, rad, Path.Direction.CW)
+                c.save(); c.clipPath(clip)
+                c.drawBitmap(art, src, android.graphics.RectF(l, t, r, b), bmp)
+                if (hot || labelsAll) {
+                    scrim.shader = LinearGradient(0f, t, 0f, b, Color.TRANSPARENT, Theme.withAlpha(Color.BLACK, 0.8f), Shader.TileMode.CLAMP)
+                    c.drawRect(l, t, r, b, scrim)
+                }
+                c.restore()
+            } else {
+                p.shader = LinearGradient(l, t, r, b, tones[i], Theme.mix(tones[i], Color.BLACK, 0.45f), Shader.TileMode.CLAMP)
+                c.drawRoundRect(l, t, r, b, rad, rad, p)
+                p.shader = null
+            }
+            if (hot || labelsAll) {
+                val pad = cw * 0.07f
+                val name = samples.getOrNull(i)?.first?.ifEmpty { null } ?: names[i]
+                c.drawText(title.fit(name, cw - pad * 2), l + pad, b - pad, title)
+            }
+            if (hot) {
+                val sw = Theme.px(if (style == 2) 4f else 6f)
+                ring.strokeWidth = sw
+                ring.color = if (style == 2) Theme.mix(Theme.accent, Color.WHITE, 0.3f) else Theme.TEXT
+                c.drawRoundRect(l + sw / 2, t + sw / 2, r - sw / 2, b - sw / 2, rad - sw / 2, rad - sw / 2, ring)
+            }
+            c.restore()
         }
     }
 }

@@ -196,10 +196,19 @@ class Sheet(
     headerProfile: Profile? = null,
     /** Title sheets lead with the title's poster. An empty string shows a film icon until art arrives. */
     posterUrl: String? = null,
-) : OverlayBase(act, 0.5f, haze = true) {
+    /** Rows toggle their tick and the sheet stays open. [onClose] runs after it closes. */
+    private val keep: Boolean = false,
+    /** Icon beside the title when there is no art, profile or poster. 0 uses the first row's icon. */
+    headerIcon: Int = 0,
+    private val onClose: (() -> Unit)? = null,
+) : OverlayBase(act, 0.5f, haze = true), HomeActivity.Closable {
     override val tapAway = true
-    /** [profile] shows that profile's picture in place of [icon]. */
-    class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val tint: Int = 0, val run: () -> Unit)
+    /** [profile] shows that profile's picture in place of [icon]. [on] reads the tick again after a row runs in a sheet that stays open. */
+    class Action(val label: String, val icon: Int, val sub: String = "", val profile: Profile? = null, val checked: Boolean = false, val tint: Int = 0,
+                 val on: (() -> Boolean)? = null, val run: () -> Unit)
+
+    // Runs after the sheet has handed focus back.
+    override fun onClosed() { onClose?.let { android.os.Handler(android.os.Looper.getMainLooper()).post(it) } }
 
     init {
         val w = 760f
@@ -227,6 +236,12 @@ class Sheet(
             panel.place(ph, 48f, 52f, 76f, 112f)
             if (posterUrl.isNotEmpty()) Images.load(posterUrl, Theme.ipx(152f)) { b -> ph.art = b }
             tx = 152f
+        } else {
+            val glyph = if (headerIcon != 0) headerIcon else actions.firstOrNull { it.profile == null }?.icon ?: 0
+            if (glyph != 0) {
+                panel.place(SheetIcon(act, glyph), 48f, 60f, 96f, 96f)
+                tx = 172f
+            }
         }
         panel.place(act.label(title, 40f, Theme.TEXT, Theme.SEMIBOLD), tx, if (subtitle.isEmpty()) 88f else 66f, w - tx - 48f, 54f)
         if (subtitle.isNotEmpty()) panel.place(act.label(subtitle, 24f, Theme.TEXT_DIM), tx, 128f, w - tx - 48f, 34f)
@@ -242,6 +257,7 @@ class Sheet(
         panel.place(act.clipBox(scroll), 10f, 200f, w - 20f, listH)
         if (footer != null) panel.place(footer, 48f, 200f + listH + 24f, w - 96f, footerH)
         var first: View? = null
+        val rows = ArrayList<Pair<SettingRow, Action>>()
         for (a in actions) {
             val row = SettingRow(act, a.icon, a.label).apply {
                 this.subtitle = a.sub
@@ -250,12 +266,32 @@ class Sheet(
                 trail = if (a.checked) SettingRow.Trail.CHECK else SettingRow.Trail.NONE
                 checked = a.checked
                 divider = false
-                setOnClickListener { act.pop(); a.run() }
+                if (keep) setOnClickListener {
+                    a.run()
+                    for ((r, x) in rows) { val c = x.on?.invoke() ?: x.checked; r.checked = c; r.trail = if (c) SettingRow.Trail.CHECK else SettingRow.Trail.NONE }
+                } else setOnClickListener { act.pop(); a.run() }
             }
+            rows.add(row to a)
             list.addView(row, LinearLayout.LayoutParams(-1, Theme.ipx(104f)).apply { bottomMargin = Theme.ipx(4f) })
             if (first == null) first = row
         }
         post { first?.requestFocus() }
+    }
+}
+
+/** An accent disc with a glyph, beside a sheet's title. */
+class SheetIcon(ctx: android.content.Context, private val glyph: Int) : View(ctx) {
+    private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+    override fun onDraw(c: android.graphics.Canvas) {
+        val w = width.toFloat()
+        fill.shader = android.graphics.LinearGradient(0f, 0f, w, w, Theme.accent, Theme.duo(Theme.accent), android.graphics.Shader.TileMode.CLAMP)
+        c.drawCircle(w / 2, w / 2, w / 2, fill)
+        val s = (w * 0.46f).toInt()
+        val o = ((w - s) / 2).toInt()
+        val ic = context.frameIcon(glyph, Theme.onAccent)
+        ic.setBounds(o, o, o + s, o + s)
+        ic.draw(c)
     }
 }
 
@@ -276,9 +312,9 @@ class AppPicker(
         val list = act.apps.filter { it.pkg !in act.cfg.hidden && (pick != null || !act.isPinned(it.pkg)) }
         val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
         val grid = FrameLayout(act).apply { clipChildren = false }
-        val pitchX = HomeScreen.TILE + HomeScreen.TILE_GAP
-        // As many columns as the screen holds.
-        val cols = ((Theme.W - 2 * 96f + HomeScreen.TILE_GAP) / pitchX).toInt().coerceAtLeast(4)
+        // As many columns as the screen holds, spread edge to edge.
+        val cols = HomeScreen.gridCols(Theme.W - 2 * 96f)
+        val pitchX = HomeScreen.gridPitch(Theme.W - 2 * 96f, cols)
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
@@ -347,9 +383,9 @@ class RemapPicker(
         val list = act.apps.filter { it.pkg !in act.cfg.hidden && it.pkg != act.packageName }
         val scroll = ScrollView(act).apply { isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false }
         val grid = FrameLayout(act).apply { clipChildren = false }
-        val pitchX = HomeScreen.TILE + HomeScreen.TILE_GAP
-        // As many columns as the screen holds.
-        val cols = ((Theme.W - 2 * 96f + HomeScreen.TILE_GAP) / pitchX).toInt().coerceAtLeast(4)
+        // As many columns as the screen holds, spread edge to edge.
+        val cols = HomeScreen.gridCols(Theme.W - 2 * 96f)
+        val pitchX = HomeScreen.gridPitch(Theme.W - 2 * 96f, cols)
         val pitchY = HomeScreen.TILE_H + 40f
         val rows = (list.size + cols - 1) / cols
         scroll.addView(grid, LayoutParams(-1, Theme.ipx(rows * pitchY + 80f)))
@@ -451,7 +487,9 @@ class SignInScreen(act: HomeActivity, expired: Boolean = false) : OverlayBase(ac
         val qrPanel = Panel(act, 40f, { android.graphics.Color.WHITE })
         place(qrPanel, 330f, 330f, 420f, 420f)
         qrPanel.place(qr, 30f, 30f, 360f, 360f)
-        place(act.label(if (expired) "Sign in to Stremio again" else "Sign in to Stremio", 64f, Theme.TEXT, Theme.BOLD), 870f, 268f, 980f, 80f)
+        // Stremio's mark leads the title.
+        place(ImageView(act).apply { setImageDrawable(act.getDrawable(R.drawable.ic_stremio)) }, 870f, 272f, 72f, 72f)
+        place(act.label(if (expired) "Sign in to Stremio again" else "Sign in to Stremio", 64f, Theme.TEXT, Theme.BOLD), 966f, 268f, 884f, 80f)
         if (expired) {
             // Shown when Stremio ends the session, such as after a password change.
             place(act.label("Your Stremio sign-in has ended. This can happen after a password change. Your settings are safe.",

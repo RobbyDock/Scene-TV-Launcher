@@ -119,6 +119,10 @@ class HomeActivity : Activity() {
         if (Profiles.current.color != cfg.accent) { Profiles.current.color = cfg.accent; Profiles.save(this) }
         Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
         Theme.motion = cfg.motion
+        Theme.focusStyle = cfg.focusStyle
+        Theme.titleFont = cfg.titleFont
+        Theme.labelsAll = cfg.labelsAll
+        shareWithSaver()
         // Draws beside a phone's camera cutout too, so the layout fills the screen it measured.
         if (Build.VERSION.SDK_INT >= 28) window.attributes = window.attributes.apply {
             layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -258,7 +262,56 @@ class HomeActivity : Activity() {
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) Images.trimMemory()
     }
 
+    /**
+     * Lets the screensaver read Home's titles and weather, fresh each time it asks. Nothing on a
+     * Kids profile, with the Spotlight off or when signed out.
+     */
+    private fun shareWithSaver() {
+        val titles = { saverTitles() }
+        val weatherNow = { saverWeather() }
+        SaverData.titles = titles
+        SaverData.weather = weatherNow
+        saverShared = titles to weatherNow
+    }
+
+    /** What this Home gave the screensaver, so it only takes back its own. */
+    private var saverShared: Pair<Any, Any>? = null
+
+    /** Continue watching and Coming up, taking turns, at most 12, each with why it is there. */
+    private fun saverTitles(): List<SaverData.Title> {
+        if (!spotlightOn || !Watch.signedIn(this)) return emptyList()
+        val cw = continueItems.take(8).map { it ->
+            val line = when {
+                it.started -> {
+                    val left = it.minutesLeft
+                    "Continue  ·  " + if (left >= 60) "${left / 60} h ${left % 60} min left" else "$left min left"
+                }
+                it.isNew -> if (it.newCount == 1) "1 new episode" else "${it.newCount} new episodes"
+                else -> "Up next"
+            }
+            SaverData.Title(it.id, it.type, it.name, line)
+        }
+        // An episode that has already aired is no longer coming up.
+        val now = System.currentTimeMillis()
+        val up = (if (Coming.shown(this)) Coming.ready.orEmpty() else emptyList()).filter { it.air.at > now }.take(6).map { u ->
+            SaverData.Title(u.id, "series", u.name, Coming.chip(this, cfg.clock, u.air).first + "  ·  S${u.air.season} E${u.air.episode}")
+        }
+        val out = ArrayList<SaverData.Title>()
+        var i = 0
+        while (out.size < 12 && (i < cw.size || i < up.size)) { cw.getOrNull(i)?.let { out.add(it) }; up.getOrNull(i)?.let { out.add(it) }; i++ }
+        return out.take(12)
+    }
+
+    /** The weather as the screensaver shows it, or null when off or not known. */
+    private fun saverWeather(): Triple<Int, Int, String>? {
+        val w = weather ?: return null
+        if (!cfg.weatherOn) return null
+        val (cond, res) = Weather.describe(w.code, w.day)
+        return Triple(res, Weather.tint(w.code, w.day), Weather.format(w.temp, cfg.fahrenheit) + "  ·  " + cond)
+    }
+
     override fun onDestroy() {
+        saverShared?.let { (t, w) -> if (SaverData.titles === t) SaverData.titles = null; if (SaverData.weather === w) SaverData.weather = null }
         try { unregisterReceiver(packageReceiver) } catch (e: Exception) { }
         try { unregisterReceiver(screenReceiver) } catch (e: Exception) { }
         netCallback?.let { cb -> try { getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) } catch (e: Exception) { } }
@@ -429,6 +482,9 @@ class HomeActivity : Activity() {
     fun themeChanged() {
         Theme.apply(cfg.accent, cfg.trueDark, cfg.glass)
         Theme.motion = cfg.motion
+        Theme.focusStyle = cfg.focusStyle
+        Theme.titleFont = cfg.titleFont
+        Theme.labelsAll = cfg.labelsAll
         save()
         root.setBackgroundColor(Theme.bg)
         home.rebuild()
@@ -576,6 +632,11 @@ class HomeActivity : Activity() {
     /** The signed-out notice shows once per run. */
     private var toldSignedOut = false
 
+    /** The watched series Coming up last looked at. */
+    private var comingSig = ""
+    /** How many seen titles Newly popular last left out. */
+    private var seenCount = 0
+
     fun refreshContinue(force: Boolean, maxAge: Long = 45_000L) {
         if (Demo.on) return
         if (!Watch.signedIn(this)) {
@@ -604,6 +665,12 @@ class HomeActivity : Activity() {
                 setContinue((kept + keepNew).sortedByDescending { it.lastWatched })
                 checkNewEpisodes(list)
                 Library.refresh(this)
+                // The watched series changed: Coming up looks again.
+                val watched = Stremio.watching.joinToString(",") { it.id }
+                if (watched != comingSig) { comingSig = watched; Coming.reset(); home.rebuild() }
+                // The library changed: Newly popular leaves out what is now seen.
+                else if (Stremio.seenIds.size != seenCount) home.rebuild()
+                seenCount = Stremio.seenIds.size
             } else if (Watch.signedOutByApp(this)) {
                 // The app ended Scene's sign-in, for example after a password change. Home says so
                 // where Continue watching was, and asks once; nothing pops up over what you're doing.
@@ -1117,11 +1184,15 @@ class HomeActivity : Activity() {
     }
 
     fun hide(pkg: String) {
+        // Focus moves to the app after it in All apps, or the one before at the end.
+        val list = sortedApps().map { it.pkg }
+        val at = list.indexOf(pkg)
+        val next = list.getOrNull(at + 1) ?: list.getOrNull(at - 1)
         cfg.hidden.add(pkg)
         cfg.pinned.removeAll { it.pkg == pkg }
         cfg.recents.remove(pkg)
         save()
-        home.rebuild()
+        home.rebuild(next?.let { "grid:$it" })
     }
 
     fun unhide(pkg: String) {
@@ -1234,6 +1305,26 @@ class HomeActivity : Activity() {
     }
 
     /** Long-press menu for a Continue watching card. */
+    /** Options for a Coming up card: when it airs, the episode list, and hiding the series. */
+    fun comingMenu(u: Coming.Upcoming) {
+        val a = u.air
+        val app = Watch.source(this).label
+        val named = a.title.isNotEmpty() && a.title != "TBA" && !Regex("^Episode \\d+$").matches(a.title)
+        val actions = listOf(
+            Sheet.Action(if (a.exact) "Airs ${Coming.weekday(a)}" else "Not confirmed yet", R.drawable.ic_event_upcoming, Coming.long(this, cfg.clock, a)) {},
+            Sheet.Action("Episode list", R.drawable.ic_list, "All seasons and episodes in $app") { openDetail("series", u.id) },
+            Sheet.Action("Hide from Coming up", R.drawable.ic_visibility_off, "Bring it back in Settings") {
+                if (u.id !in cfg.comingHidden) cfg.comingHidden.add(u.id)
+                save()
+                Coming.reset()
+                home.rebuild()
+                toast("Hidden from Coming up")
+            },
+            Sheet.Action("Coming Up settings", R.drawable.ic_settings, "How far ahead, and hidden shows") { openSettings("coming") },
+        )
+        push(Sheet(this, u.name, "S${a.season} E${a.episode}" + (if (named) "  ·  ${a.title}" else ""), null, actions, posterUrl = u.poster ?: ""))
+    }
+
     fun continueMenu(item: CwItem) {
         val meta = Watch.cachedMeta(item.id)
         val src = Watch.source(this)
@@ -1260,8 +1351,8 @@ class HomeActivity : Activity() {
                 if (item.inLibrary) a.add(Sheet.Action(remove, R.drawable.ic_bookmark_added, "Removes it from $place" + if (stremio) " and Continue watching" else "") { setInLibrary(item, false) })
                 else a.add(Sheet.Action(add, R.drawable.ic_bookmark_add, "Keeps it in $place" + if (stremio && series) " and tells you about new episodes" else "") { setInLibrary(item, true) })
             }
-            // The Cinema spotlight has no alerts button, so the choice lives here.
-            if (stremio && Theme.CINEMA && series && item.inLibrary) {
+            // The spotlight has no alerts button, so the choice lives here.
+            if (stremio && series && item.inLibrary) {
                 if (item.notify) a.add(Sheet.Action("Stop new episode alerts", R.drawable.ic_notifications_active, "No more alerts for new episodes") { setNotify(item, false) })
                 else a.add(Sheet.Action("Get new episode alerts", R.drawable.ic_notifications_off, "Tells you when a new episode is out") { setNotify(item, true) })
             }

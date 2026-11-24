@@ -29,11 +29,11 @@ class AppGridScreen(
     }
     private val grid = FrameLayout(act).apply { clipChildren = false }
     private val sub = act.label("", 26f, Theme.TEXT_DIM, Theme.MEDIUM)
-    private val cols = ((Theme.W - 2 * EDGE + GAP) / (HomeScreen.TILE + GAP)).toInt().coerceAtLeast(4)
+    private val cols = HomeScreen.gridCols(Theme.W - 2 * EDGE)
+    private val pitch = HomeScreen.gridPitch(Theme.W - 2 * EDGE, cols)
 
     private companion object {
         const val EDGE = 96f
-        const val GAP = 44f
         const val LINE = 40f
         /** Where the first line starts, under the title. */
         const val TOP = 220f
@@ -63,7 +63,7 @@ class AppGridScreen(
         var focus: View? = null
         for ((i, pkg) in list.withIndex()) {
             val e = act.app(pkg)
-            val tile = AppTile(act).also { it.cinema = Theme.CINEMA }.apply {
+            val tile = AppTile(act).also { it.cinema = true }.apply {
                 label = e?.label ?: pkg
                 this.icon = e?.icon
                 locked = pkg in act.cfg.locked
@@ -73,7 +73,7 @@ class AppGridScreen(
                 setOnLongClickListener { act.appMenu(pkg, label, allApps, false, row); true }
             }
             grid.addView(tile, LayoutParams(Theme.ipx(HomeScreen.TILE), Theme.ipx(HomeScreen.TILE_H)).apply {
-                leftMargin = Theme.ipx(EDGE + (i % cols) * (HomeScreen.TILE + GAP))
+                leftMargin = Theme.ipx(EDGE + (i % cols) * pitch)
                 topMargin = Theme.ipx(TOP + (i / cols) * (HomeScreen.TILE_H + LINE))
             })
             if (focus == null || pkg == keep) focus = tile

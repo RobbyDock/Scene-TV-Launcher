@@ -1,5 +1,5 @@
 Scene
-Copyright 2026 Robert Dock
+Copyright 2026 Robbie Dock
 
 Scene's own source code is licensed under the GNU General Public License
 version 3 or later. See the LICENSE file. Any distributed modified version
@@ -19,6 +19,16 @@ Apache License 2.0
   * Android Gradle Plugin and Android SDK     (Google)
   * Material Symbols Rounded icons            (Google)
     https://github.com/google/material-design-icons
+
+SIL Open Font License 1.1, bundled in app/src/main/assets/fonts with their
+license texts
+  * Outfit                                    (The Outfit Project Authors)
+  * Instrument Serif                          (The Instrument Serif Project Authors)
+  * Fraunces                                  (The Fraunces Project Authors)
+  * DM Serif Display                          (Adobe, Google LLC)
+  * Space Grotesk                             (The Space Grotesk Project Authors)
+  * Manrope                                   (The Manrope Project Authors)
+    https://github.com/google/fonts
 
 Eclipse Public License 1.0, tests only, not shipped in the app
   * JUnit 4                                   (JUnit contributors)
@@ -42,6 +52,10 @@ of the services below.
   * Cinemeta and MetaHub: titles, details and artwork.
   * Open-Meteo: weather and city search, used under CC BY 4.0.
     https://open-meteo.com
+  * TVmaze: episode air times for Coming up, used under CC BY-SA 4.0.
+    https://www.tvmaze.com
+  * Anime Kitsu addon for Stremio: anime details and air times for Coming up.
+    https://anime-kitsu.strem.fun
 
 ================================================================================
 Content

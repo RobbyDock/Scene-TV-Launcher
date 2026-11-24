@@ -52,13 +52,12 @@ object Theme {
     /** Background art and screensaver. */
     val AMBIENT_MS get() = when (motion) { 0 -> 900L; 1 -> 600L; else -> 0L }
     val moves get() = motion == 0
+    /** Focus look: 0 white ring and lift, 1 white ring, 2 accent glow. */
+    var focusStyle = 0
+    /** Name every card on Home, not only the focused one. */
+    var labelsAll = true
     const val FOCUS_SCALE = 1.06f
 
-    /**
-     * Cinema look for Home: a bare top bar, a larger title, fewer spotlight buttons, and focus shown
-     * by lift and a short bar instead of a ring.
-     */
-    const val CINEMA = true
     val EASE = PathInterpolator(0.22f, 0.25f, 0f, 1f)
 
     // Outfit is bundled so text measures the same on every device; the system font is the fallback
@@ -88,6 +87,34 @@ object Theme {
     }
 
     private var fontsLoaded = false
+
+    /** Spotlight title fonts: the name, the bundled file and the weight it is drawn at. */
+    class TitleFont(val name: String, val file: String, val weight: Int)
+    val TITLE_FONTS = listOf(
+        TitleFont("Outfit", "Outfit", 700),
+        TitleFont("Instrument Serif", "InstrumentSerif", 400),
+        TitleFont("Fraunces", "Fraunces", 600),
+        TitleFont("DM Serif Display", "DMSerifDisplay", 400),
+        TitleFont("Space Grotesk", "SpaceGrotesk", 700),
+        TitleFont("Manrope", "Manrope", 800),
+    )
+    /** Chosen title font, an index into [TITLE_FONTS]. */
+    var titleFont = 0
+    private var assets: android.content.res.AssetManager? = null
+    private val titleFaces = HashMap<Int, Typeface>()
+
+    /** Typeface for a title font. Loaded on first use, with bold Outfit as the fallback. */
+    fun titleFace(i: Int = titleFont): Typeface = titleFaces.getOrPut(i) {
+        val f = TITLE_FONTS.getOrNull(i) ?: return BOLD
+        val a = assets ?: return BOLD
+        try {
+            Typeface.Builder(a, "fonts/${f.file}.ttf")
+                .setFontVariationSettings("'wght' ${f.weight}")
+                .setWeight(f.weight)
+                .setFallback("sans-serif")
+                .build()
+        } catch (e: Exception) { return BOLD }
+    }
 
     var accentIndex = 1
         private set
@@ -130,6 +157,7 @@ object Theme {
 
     fun init(ctx: Context) {
         FrameIcons.clear()
+        assets = ctx.applicationContext.assets
         // The whole window, including any space under hidden system bars.
         val b = measured ?: if (android.os.Build.VERSION.SDK_INT >= 30) {
             ctx.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds

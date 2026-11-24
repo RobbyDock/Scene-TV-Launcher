@@ -19,13 +19,13 @@ object Sounds {
     /** -1 plays OK at the system's own effect level. */
     private const val OK_VOL = -1f
 
-    var on = false
+    var on = true
         private set
     private var last = 0L
     private var audio: AudioManager? = null
 
     fun load(ctx: Context) {
-        on = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+        on = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, true)
         audio = ctx.getSystemService(AudioManager::class.java)
     }
 
