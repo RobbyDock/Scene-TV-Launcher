@@ -183,7 +183,9 @@ object Stremio {
         val arr = o.optJSONArray("result") ?: JSONArray()
         val out = ArrayList<CwItem>()
         val follow = ArrayList<Followed>()
+        val seen = ArrayList<Followed>()
         val keep = ArrayList<SearchHit>()
+        val known = HashSet<String>()
         val yearAgo = System.currentTimeMillis() - 365L * 24 * 3600_000
         for (i in 0 until arr.length()) {
             val it = arr.optJSONObject(i) ?: continue
@@ -193,6 +195,18 @@ object Stremio {
             val temp = it.optBoolean("temp")
             val st = it.optJSONObject("state") ?: continue
             val id = it.optString("_id")
+            // Saved, or watched even once: Newly popular counts it as seen.
+            if (!(removed && !temp) || st.optInt("timesWatched") > 0 || parseTime(st.opt("lastWatched")) > 0) {
+                known.add(id)
+                known.add(NewlyPopular.NAME + NewlyPopular.nameKey(it.optString("name")))
+            }
+            // Coming up follows series actually watched in the last year, anime included. Removed ones stay out.
+            val watchedAt = parseTime(st.opt("lastWatched"))
+            if (type == "series" && (id.startsWith("tt") || id.startsWith("kitsu:")) && (watchedAt > 0 || st.optInt("timesWatched") > 0) &&
+                !(removed && !temp)) {
+                val at = if (watchedAt > 0) watchedAt else parseTime(it.opt("_mtime"))
+                if (at > yearAgo) seen.add(Followed(id, it.optString("name", id), it.optString("poster").ifEmpty { null }, at, null))
+            }
             if (!id.startsWith("tt")) continue
             val last = parseTime(st.opt("lastWatched")).takeIf { t -> t > 0 } ?: parseTime(it.opt("_mtime"))
             val poster = it.optString("poster").ifEmpty { null }
@@ -208,6 +222,8 @@ object Stremio {
         }
         out.sortByDescending { it.lastWatched }
         followed = follow
+        watching = seen.sortedByDescending { it.lastWatched }
+        seenIds = known
         savedTitles = keep.sortedByDescending { it.added }
         libraryLoaded = true
         Store.writeText(ctx, LIB_CACHE, JSONArray(savedTitles.map { h ->
@@ -247,6 +263,14 @@ object Stremio {
         return list.drop(start).take(count)
     }
 
+    /** Library ids and title keys saved or watched, from the last library fetch: what Newly popular leaves out. */
+    @Volatile var seenIds: Set<String> = emptySet()
+        private set
+
+    /** Series watched in the last year, anime included, newest first: what Coming up follows. */
+    @Volatile var watching: List<Followed> = emptyList()
+        private set
+
     /** Library series checked for new episodes, from the last library fetch. */
     @Volatile var followed: List<Followed> = emptyList()
         private set
@@ -260,10 +284,12 @@ object Stremio {
         val byId = items.associateBy { it.id }.toMutableMap()
         for (f in followed.sortedByDescending { it.lastWatched }.take(60)) {
             val m = try { meta(ctx, "series", f.id) } catch (e: Exception) { null } ?: continue
-            val fresh = m.videos.filter { it.released in (f.lastWatched + 1)..now }
+            // An episode is new once it has aired here: TVmaze's time when saved, else Cinemeta's date.
+            fun aired(v: Video) = Coming.airTime(ctx, f.id, v.season, v.episode) ?: v.released
+            val fresh = m.videos.filter { aired(it) in (f.lastWatched + 1)..now }
             if (fresh.isEmpty()) continue
             val first = fresh.first()
-            val newest = fresh.maxOf { it.released }
+            val newest = fresh.maxOf { aired(it) }
             val have = byId[f.id]
             byId[f.id] = if (have != null) {
                 // Keeps an episode in progress; otherwise points at the first new one.
@@ -633,7 +659,7 @@ object Stremio {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
-    private fun parseTime(v: Any?): Long = when (v) {
+    fun parseTime(v: Any?): Long = when (v) {
         is Number -> v.toLong()
         is String -> try {
             val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }

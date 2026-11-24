@@ -54,6 +54,9 @@ Prefer your own server? In **Settings → Watch With**, pick Jellyfin or Plex in
 ## 📱 Screenshots
 
 <p align="center">
+  <img src=".github/assets/screens/16-true-dark.png" width="98%" alt="The same Home screen in Dark on the left and True Dark on the right, split by a diagonal cut" />
+</p>
+<p align="center">
   <img src=".github/assets/screens/02-continue-watching.png" width="49%" alt="Continue watching with the spotlight on a series" />
   <img src=".github/assets/screens/03-home-apps.png" width="49%" alt="Pinned apps and All apps on Home" />
 </p>
@@ -110,7 +113,7 @@ A few extras need a newer Android. On 8.0 and 8.1 focus glows are not tinted. On
 ## 🔒 Privacy
 
 - **No ads, no analytics, no accounts.** Scene has no server of its own and sends nothing about you anywhere.
-- **Direct connections only.** Scene talks to your watch app (Stremio and Cinemeta, your Jellyfin server, or Plex), Open-Meteo for weather, LRCLIB for lyrics and GitHub for update checks. Nothing else.
+- **Direct connections only.** Scene talks to your watch app (Stremio and Cinemeta, your Jellyfin server, or Plex), Open-Meteo for weather, TVmaze and the Kitsu anime addon for episode air times, LRCLIB for lyrics and GitHub for update checks. Nothing else.
 - **Nothing in the background.** No services, no scheduled jobs. Scene does its work while it is on screen and stops when it is not. The daily update check runs only while Home is open, and you can turn it off.
 - **Permissions on demand.** The microphone is asked for only when you use voice search, location only if you choose local weather, and notification access only if you turn on Now Playing.
 - **Sign-ins stay on the TV.** Stremio, Jellyfin and Plex sign-ins are encrypted with the Android Keystore.
@@ -247,7 +250,7 @@ Scene is plain Kotlin and Android Views with no runtime libraries at all, which 
 
 ## 🙏 Credits
 
-Scene uses Material Symbols icons and draws profile pictures with the device's emoji font. See [NOTICE](NOTICE) for full attribution.
+Scene uses Material Symbols icons, bundles six fonts under the SIL Open Font License, and draws profile pictures with the device's emoji font. See [NOTICE](NOTICE) for full attribution.
 
 ## 📝 License
 

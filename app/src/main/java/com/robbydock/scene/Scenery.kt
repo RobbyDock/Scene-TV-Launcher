@@ -4,7 +4,7 @@ import kotlin.random.Random
 
 /** Colour sets for the ambient screensaver. Each run picks one. */
 object Scenery {
-    /** [orbits] holds, per glow, x speed, y speed, x phase and y phase. */
+    /** [orbits] holds, per glow, x speed, y speed, x phase, y phase, swell speed and swell phase. */
     class Scene(val name: String, val base: Int, val glows: List<Int>, val orbits: List<DoubleArray>)
 
     private class Set(val name: String, val base: Int, val glows: List<Int>)
@@ -19,15 +19,14 @@ object Scenery {
 
     val names get() = SETS.map { it.name } + "Accent"
 
-    /** A random set, or one built from [accent], with fresh orbits. */
-    fun pick(accent: Int, rnd: Random = Random.Default): Scene {
-        val i = rnd.nextInt(SETS.size + 1)
-        val set = SETS.getOrNull(i) ?: fromAccent(accent)
-        // Periods of roughly 1.5 to 4 minutes per axis.
-        val orbits = set.glows.map {
-            doubleArrayOf(0.026 + rnd.nextDouble() * 0.04, 0.022 + rnd.nextDouble() * 0.04, rnd.nextDouble() * 6.28, rnd.nextDouble() * 6.28)
+    /** Every set, and one built from [accent], in a random order. The glows share one set of orbits. */
+    fun tour(accent: Int, rnd: Random = Random.Default): List<Scene> {
+        // Periods of roughly 40 to 90 seconds per axis, a swell of their own, and starts spread apart.
+        val orbits = (0 until 4).map { i ->
+            doubleArrayOf(0.07 + rnd.nextDouble() * 0.08, 0.06 + rnd.nextDouble() * 0.08, i * 1.57 + rnd.nextDouble() * 0.6,
+                i * 2.36 + rnd.nextDouble() * 0.6, 0.05 + rnd.nextDouble() * 0.06, rnd.nextDouble() * 6.28)
         }
-        return Scene(set.name, set.base, set.glows, orbits)
+        return (SETS + fromAccent(accent)).shuffled(rnd).map { Scene(it.name, it.base, it.glows, orbits) }
     }
 
     /** The profile's accent with darker and shifted companions, on near-black. */

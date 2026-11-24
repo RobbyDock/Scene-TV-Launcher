@@ -22,10 +22,11 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     private companion object {
         /** Pane titles whose settings live in each profile's own file. */
-        val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Clock & Weather", "Spotlight",
+        val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Focus Style", "Title Font", "Coming Up", "Newly Popular", "Clock & Weather", "Spotlight",
             "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "App Categories", "Locked Apps", "Open on Start", "Your Library", "Export Settings", "Restore Settings", "Reset Home")
         /** Pane titles whose settings every profile shares. */
-        val ALL_PROFILES = setOf("Profiles", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
+        val ALL_PROFILES = setOf("Profiles", "Show in App Launcher", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
+        val FOCUS_NAMES = arrayOf("White Ring and Lift", "White Ring", "Accent Glow")
         const val GROUP_LABEL_H = 32f
         const val GROUP_GAP = 14f
         /** Space above the large title, which scrolls away with the list. */
@@ -165,10 +166,16 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         return false
     }
 
-    /** Up and down inside the pane stay in the pane. */
+    /**
+     * Up and down inside the pane stay in the pane. Left moves within the pane while it can, then
+     * returns to the row the pane belongs to, wherever the list has scrolled.
+     */
     override fun focusSearch(focused: View?, direction: Int): View? {
         if (focused != null && (direction == View.FOCUS_UP || direction == View.FOCUS_DOWN) && isInPane(focused)) {
             return android.view.FocusFinder.getInstance().findNextFocus(pane, focused, direction) ?: focused
+        }
+        if (focused != null && direction == View.FOCUS_LEFT && isInPane(focused)) {
+            return android.view.FocusFinder.getInstance().findNextFocus(pane, focused, direction) ?: rows[current] ?: super.focusSearch(focused, direction)
         }
         return super.focusSearch(focused, direction)
     }
@@ -218,6 +225,12 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             checked = cfg.spotlight
             setOnClickListener { cfg.spotlight = !cfg.spotlight; act.save(); act.home.rebuild(); refresh("spot") }
         }
+        if (Watch.isStremio(act)) row("coming", R.drawable.ic_event_upcoming, "Coming Up", comingSummary()) { paneComing() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("coming0")?.requestFocus() }
+        }
+        if (Watch.isStremio(act)) row("newpop", R.drawable.ic_star, "Newly Popular", newSummary()) { paneNewPop() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("newpop0")?.requestFocus() }
+        }
         val cwCount = act.hiddenContinueCount
         row("cwhidden", R.drawable.ic_movie_off, "Hidden Titles", if (cwCount == 0) "None" else "$cwCount hidden") { paneCwHidden() }.apply {
             trail = SettingRow.Trail.NONE
@@ -258,12 +271,20 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         row("locks", R.drawable.ic_lock, "Locked Apps", if (cfg.locked.isEmpty()) "None" else "${cfg.locked.size} locked") { paneLocks() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("locks0")?.requestFocus() }
         }
+        row("appicon", R.drawable.ic_home_app_logo, "Show in App Launcher", "") { paneAppIcon() }.apply {
+            trail = SettingRow.Trail.SWITCH
+            checked = iconShown()
+            setOnClickListener { showIcon(!iconShown()); refresh("appicon") }
+        }
         endGroup()
 
         group("Appearance")
         row("accent", R.drawable.ic_palette, "Accent Colour", Theme.ACCENTS[cfg.accent].name) { paneAccent() }.apply {
             swatch = Theme.accent
             setOnClickListener { pane.findViewWithTag<View>("swatch${cfg.accent}")?.requestFocus() }
+        }
+        row("font", R.drawable.ic_edit, "Title Font", Theme.TITLE_FONTS[cfg.titleFont].name) { paneFont() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("font${cfg.titleFont}")?.requestFocus() }
         }
         row("dark", R.drawable.ic_dark_mode, "True Dark", "") { paneDark() }.apply {
             trail = SettingRow.Trail.SWITCH
@@ -282,6 +303,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         row("motion", R.drawable.ic_auto_awesome, "Motion", arrayOf("Full", "Reduced", "Off")[cfg.motion]) { paneMotion() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("motion0")?.requestFocus() }
+        }
+        row("focus", R.drawable.ic_dashboard_customize, "Focus Style", FOCUS_NAMES[cfg.focusStyle]) { paneFocus() }.apply {
+            setOnClickListener { pane.findViewWithTag<View>("focus${cfg.focusStyle}")?.requestFocus() }
         }
         endGroup()
 
@@ -730,6 +754,174 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             checked = cfg.splash && cfg.motion != 2
             alpha = if (cfg.motion == 2) 0.45f else 1f
             setOnFocusChangeListener { _, has -> if (has) demo.mode = cfg.motion }
+        }
+    }
+
+    private fun comingSummary() = if (!act.cfg.comingOn) "Off" else Coming.AHEAD_NAMES[act.cfg.comingAhead]
+
+    private fun paneComing() {
+        val cfg = act.cfg
+        paneHeader("Coming Up", "Next episodes of the series you follow, at the time they air here.")
+        val again = {
+            act.save()
+            Coming.reset()
+            act.home.rebuild()
+            refresh("coming")
+        }
+        // The row as it looks on Home, smaller, or a note when nothing is due.
+        val prev = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; alpha = if (Coming.shown(act)) 1f else 0.45f }
+        pane.place(prev, 48f, top1, PANE_W - 96f, 136f)
+        val fill = { list: List<Coming.Upcoming> ->
+            prev.removeAllViews()
+            if (list.isEmpty()) {
+                val until = if (cfg.comingAhead == 3) "yet" else "in the next " + listOf("two weeks", "30 days", "3 months")[cfg.comingAhead]
+                prev.addView(act.label("Nothing due $until", 26f, Theme.TEXT_DIM), LinearLayout.LayoutParams(-1, -1))
+            } else for ((i, u) in list.take(3).withIndex()) {
+                val card = ArtCard(act).apply {
+                    isFocusable = false; isClickable = false
+                    val (chip, soon) = Coming.chip(act, cfg.clock, u.air)
+                    title = u.name; subtitle = Coming.line(act, cfg.clock, u.air); badge = chip; badgeSoft = !soon
+                    iconRes = R.drawable.ic_event_upcoming
+                }
+                prev.addView(card, LinearLayout.LayoutParams(Theme.ipx(242f), -1).apply { if (i > 0) leftMargin = Theme.ipx(20f) })
+                val m = Watch.cachedMeta(u.id)
+                Images.load(m?.background ?: u.poster, Theme.ipx(300f)) { b -> card.art = b }
+            }
+        }
+        val ready = Coming.ready
+        if (ready != null) fill(ready)
+        else {
+            val shows = Coming.following(act).filter { it.id !in cfg.comingHidden }
+            val ctx = act.applicationContext
+            Net.run({ Coming.upcoming(ctx, shows, cfg.comingAhead) }) { if (prev.isAttachedToWindow) fill(it ?: emptyList()) }
+        }
+        val hidden = Coming.following(act).filter { it.id in cfg.comingHidden }
+        val add = optionColumn(top1 + 160f, "coming")
+        add(R.drawable.ic_event_upcoming, "Show on Home", "", SettingRow.Trail.SWITCH) {
+            if (!cfg.spotlight) { act.toast("Turn on Spotlight first"); return@add }
+            cfg.comingOn = !cfg.comingOn
+            again()
+        }.apply { checked = cfg.comingOn; alpha = if (cfg.spotlight) 1f else 0.45f }
+        add(R.drawable.ic_schedule, "How Far Ahead", Coming.AHEAD_NAMES[cfg.comingAhead], SettingRow.Trail.CHEVRON) {
+            act.push(Sheet(act, "How Far Ahead", "Coming Up", null, Coming.AHEAD_NAMES.mapIndexed { i, n ->
+                Sheet.Action(n, R.drawable.ic_event_upcoming, Coming.AHEAD_SUBS[i], checked = cfg.comingAhead == i) { cfg.comingAhead = i; again() }
+            }))
+        }.apply { alpha = if (cfg.comingOn) 1f else 0.45f }
+        add(R.drawable.ic_visibility_off, "Hidden Shows", if (hidden.isEmpty()) "None" else "${hidden.size}", SettingRow.Trail.CHEVRON) {
+            if (hidden.isEmpty()) act.toast("Nothing hidden. Hold OK on a card to hide a show.")
+            else act.push(Sheet(act, "Hidden Shows", "Coming Up", null, hidden.map { s ->
+                Sheet.Action(s.name, R.drawable.ic_visibility, "Show again") { cfg.comingHidden.remove(s.id); again() }
+            }))
+        }
+    }
+
+    private fun newSummary() = if (!act.cfg.newOn) "Off" else NewlyPopular.WINDOW_NAMES[act.cfg.newMonths]
+
+    private fun paneNewPop() {
+        val cfg = act.cfg
+        val kids = Profiles.current.kids
+        paneHeader("Newly Popular", "Popular recent films, series and anime, best rated first.")
+        val again = {
+            act.save()
+            NewlyPopular.reset()
+            act.home.rebuild()
+            refresh("newpop")
+        }
+        // The row as it looks on Home, smaller: the five best rated posters.
+        val prev = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; alpha = if (NewlyPopular.on(act)) 1f else 0.45f }
+        pane.place(prev, 48f, top1, PANE_W - 96f, 180f)
+        val cards = (0 until 5).map { i ->
+            PosterCard(act).apply { isFocusable = false; isClickable = false; loading = true }.also {
+                prev.addView(it, LinearLayout.LayoutParams(Theme.ipx(120f), -1).apply { if (i > 0) leftMargin = Theme.ipx(16f) })
+            }
+        }
+        val fill = { list: List<NewlyPopular.Title> ->
+            for ((i, card) in cards.withIndex()) {
+                val t = list.getOrNull(i)
+                if (t == null) { card.loading = false; card.visibility = View.INVISIBLE; continue }
+                card.rating = if (t.rating > 0f) String.format(java.util.Locale.US, "%.1f", t.rating) else "NEW"
+                Net.first({ NewlyPopular.poster(act, t) }) { url ->
+                    if (url == null) card.loading = false else Images.load(url, Theme.ipx(160f)) { b -> card.loading = false; card.art = b }
+                }
+            }
+        }
+        val ready = NewlyPopular.current(act)
+        if (ready != null) fill(NewlyPopular.visible(act, ready))
+        else {
+            val months = NewlyPopular.MONTHS[cfg.newMonths]
+            val kinds = cfg.newKinds
+            Net.run({ NewlyPopular.list(months, kinds) }) { if (prev.isAttachedToWindow) fill(NewlyPopular.visible(act, it ?: emptyList())) }
+        }
+        val add = optionColumn(top1 + 204f, "newpop")
+        add(R.drawable.ic_star, "Show on Home", "", SettingRow.Trail.SWITCH) {
+            if (kids) { act.toast("Not on Kids profiles"); return@add }
+            cfg.newOn = !cfg.newOn
+            again()
+        }.apply { checked = cfg.newOn && !kids; alpha = if (kids) 0.45f else 1f }
+        add(R.drawable.ic_schedule, "Released In", NewlyPopular.WINDOW_NAMES[cfg.newMonths], SettingRow.Trail.CHEVRON) {
+            act.push(Sheet(act, "Released In", "Newly Popular", null, NewlyPopular.WINDOW_NAMES.mapIndexed { i, n ->
+                Sheet.Action(n, R.drawable.ic_schedule, NewlyPopular.WINDOW_SUBS[i], checked = cfg.newMonths == i) { cfg.newMonths = i; again() }
+            }))
+        }.apply { alpha = if (cfg.newOn) 1f else 0.45f }
+        add(R.drawable.ic_movie, "Show", NewlyPopular.kindsText(cfg.newKinds), SettingRow.Trail.CHEVRON) {
+            // Ticks stay open. The pane applies the change once the sheet closes.
+            val was = cfg.newKinds
+            val icons = intArrayOf(R.drawable.ic_movie, R.drawable.ic_tv, R.drawable.ic_auto_awesome)
+            act.push(Sheet(act, "Show", "Newly Popular  ·  They take turns in the row", null, NewlyPopular.KIND_NAMES.mapIndexed { i, n ->
+                val bit = 1 shl i
+                Sheet.Action(n, icons[i], NewlyPopular.KIND_SUBS[i], checked = cfg.newKinds and bit != 0, on = { cfg.newKinds and bit != 0 }) {
+                    if (cfg.newKinds == bit) act.toast("Keep at least one") else cfg.newKinds = cfg.newKinds xor bit
+                }
+            }, keep = true, onClose = { if (cfg.newKinds != was) again() }))
+        }.apply { alpha = if (cfg.newOn) 1f else 0.45f }
+        add(R.drawable.ic_visibility_off, "Only What You Haven't Seen", "", SettingRow.Trail.SWITCH) {
+            cfg.newUnseen = !cfg.newUnseen
+            again()
+        }.apply { checked = cfg.newUnseen; alpha = if (cfg.newOn) 1f else 0.45f }
+    }
+
+    private fun paneFont() {
+        val cfg = act.cfg
+        paneHeader("Title Font")
+        // A spotlight title on a card. Long names drift, as on Home.
+        val card = surfaceCard(48f, top0, PANE_W - 96f, 200f)
+        val demo = ScrollTitle(act).apply { font = cfg.titleFont; text = act.home.spotTitle().ifEmpty { "The Lord of the Rings" } }
+        card.place(demo, 48f, 20f, PANE_W - 192f, 160f)
+        val add = optionColumn(top0 + 224f, "font")
+        for (i in Theme.TITLE_FONTS.indices) {
+            choice(add, R.drawable.ic_edit, Theme.TITLE_FONTS[i].name, cfg.titleFont == i) {
+                cfg.titleFont = i
+                Theme.titleFont = i
+                act.save()
+                act.home.invalidateAll()
+                refresh("font")
+            }.setOnFocusChangeListener { _, has -> if (has) demo.font = i }
+        }
+    }
+
+    private fun paneFocus() {
+        val cfg = act.cfg
+        paneHeader("Focus Style")
+        val demo = FocusPreview(act).apply { style = cfg.focusStyle; labelsAll = cfg.labelsAll; samples = act.home.sampleCards() }
+        pane.place(demo, 48f, top0, PANE_W - 96f, 260f)
+        val add = optionColumn(top0 + 284f, "focus")
+        val icons = intArrayOf(R.drawable.ic_focus_lift, R.drawable.ic_check_circle, R.drawable.ic_gradient)
+        for (i in FOCUS_NAMES.indices) {
+            choice(add, icons[i], FOCUS_NAMES[i], cfg.focusStyle == i) {
+                cfg.focusStyle = i
+                Theme.focusStyle = i
+                act.themeChanged()
+                refresh("focus")
+            }.setOnFocusChangeListener { _, has -> if (has) demo.style = i }
+        }
+        add(R.drawable.ic_view_agenda, "Name Every Card", "", SettingRow.Trail.SWITCH) {
+            cfg.labelsAll = !cfg.labelsAll
+            Theme.labelsAll = cfg.labelsAll
+            act.themeChanged()
+            refresh("focus")
+        }.apply {
+            checked = cfg.labelsAll
+            setOnFocusChangeListener { _, has -> demo.style = cfg.focusStyle; demo.labelsAll = if (has) true else cfg.labelsAll }
         }
     }
 
@@ -1556,6 +1748,36 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }.checked = cfg.startWake
     }
 
+    private fun iconAlias() = android.content.ComponentName(act, "${act.packageName}.LauncherIcon")
+
+    /** True when Scene's icon shows in the TV's app launcher. */
+    private fun iconShown() =
+        act.packageManager.getComponentEnabledSetting(iconAlias()) == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+
+    private fun showIcon(on: Boolean) = act.packageManager.setComponentEnabledSetting(iconAlias(),
+        if (on) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
+        android.content.pm.PackageManager.DONT_KILL_APP)
+
+    /** Scene's banner as the app launcher shows it, faded while hidden. */
+    private fun paneAppIcon() {
+        paneHeader("Show in App Launcher", "Adds Scene to the TV's own list of apps.")
+        val on = iconShown()
+        val w = 400f
+        val h = 225f
+        val y = top1 + 60f
+        val banner = ImageView(act).apply {
+            setImageResource(R.drawable.banner)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, Theme.px(18f)) }
+            }
+            alpha = if (on) 1f else 0.3f
+        }
+        pane.place(banner, (PANE_W - w) / 2, y, w, h)
+        pane.place(centredText(if (on) "Shown in the app launcher" else "Hidden from the app launcher", 26f, Theme.TEXT_DIM), 48f, y + h + 32f, PANE_W - 96f, 40f)
+    }
+
     private fun paneHidden() {
         val shown = hiddenInstalled()
         if (shown.isEmpty()) {
@@ -1708,7 +1930,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val gap = 32f
         val colW = (PANE_W - 96f - gap) / 2
         val cards = ArrayList<View>()
-        val resets = listOf("True Dark and glass","Motion", "Clock and weather", "Home row and recents", "Hidden apps", "All apps order")
+        val resets = listOf("True Dark and glass", "Motion and focus", "Clock and weather", "Home row and recents", "Hidden apps", "All apps order")
         val keeps = listOf("Accent colour", "Pinned apps", "App names", "Weather location", "Stremio sign-in", "Other profiles")
         // Both cards take the taller list's height.
         val cardH = 92f + maxOf(resets.size, keeps.size) * 48f + 24f

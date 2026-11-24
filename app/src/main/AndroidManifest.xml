@@ -77,10 +77,6 @@
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
             <!-- Registers the launcher as an assistant app that opens voice search. -->
             <intent-filter>
                 <action android:name="android.intent.action.ASSIST" />
@@ -94,6 +90,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+        <!-- Scene's icon in the TV's app launcher. Off until the user turns it on in Settings. -->
+        <activity-alias
+            android:name=".LauncherIcon"
+            android:enabled="false"
+            android:exported="true"
+            android:targetActivity=".HomeActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <!-- Admin passcode reset through adb. Requires the DUMP permission. -->
         <receiver
             android:name=".AdminReceiver"

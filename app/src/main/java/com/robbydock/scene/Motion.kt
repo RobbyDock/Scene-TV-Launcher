@@ -3,10 +3,6 @@ package com.robbydock.scene
 import android.animation.TimeInterpolator
 import android.view.View
 import android.view.ViewGroup
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.exp
-import kotlin.math.sqrt
 
 /**
  * Shared motion: a spring, entrances and staggered reveals. Every call respects the Motion
@@ -15,22 +11,10 @@ import kotlin.math.sqrt
 object Motion {
 
     /**
-     * Damped spring as an interpolator. [damping] below 1 overshoots a little; 1 settles without
-     * overshoot.
+     * Small overshoot for focus, lift, press release and pop-ins: eases out to about 108% near the
+     * middle, then glides back. The same curve as the HTML design, cubic-bezier(.34, 1.5, .5, 1).
      */
-    class Spring(private val damping: Float = 0.72f, private val freq: Float = 1.15f) : TimeInterpolator {
-        override fun getInterpolation(t: Float): Float {
-            if (t >= 1f) return 1f
-            val w = 2.0 * PI * freq * 2.2
-            val z = damping.toDouble()
-            if (z >= 1.0) return (1 - (1 + w * t) * exp(-w * t)).toFloat()
-            val wd = w * sqrt(1 - z * z)
-            return (1 - exp(-z * w * t) * (cos(wd * t) + z * w / wd * kotlin.math.sin(wd * t))).toFloat()
-        }
-    }
-
-    /** Small overshoot, for focus and pop-ins. */
-    val SPRING = Spring(0.62f, 1.1f)
+    val SPRING: TimeInterpolator = android.view.animation.PathInterpolator(0.34f, 1.5f, 0.5f, 1f)
 
     private const val RISE = 18f
 

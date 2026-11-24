@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A card raised above its shadow: the White Ring and Lift focus style. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:tint="?android:attr/colorControlNormal"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="M180-800h600q25 0 42.5 17.5T840-740v320q0 25-17.5 42.5T780-360H180q-25 0-42.5-17.5T120-420v-320q0-25 17.5-42.5T180-800ZM200-720v280h560v-280H200ZM270-240h420q13 0 21.5 8.5T720-210q0 13-8.5 21.5T690-180H270q-13 0-21.5-8.5T240-210q0-13 8.5-21.5T270-240Z" />
+    </group>
+</vector>

@@ -493,14 +493,35 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
     override val focusScale = 1.04f
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this) }
-    override fun onDetachedFromWindow() { Glass.unregister(this); removeCallbacks(spin); super.onDetachedFromWindow() }
+    /** The clock and weather pill this one covers. Its time and temperature stay in view, small, beside the song. */
+    var info: InfoPill? = null
+    private val brief = textPaint(24f, Theme.TEXT_DIM, Theme.SEMIBOLD).apply { fontFeatureSettings = "tnum" }
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val minute = object : Runnable {
+        override fun run() { invalidate(); postDelayed(this, 60_000 - System.currentTimeMillis() % 60_000 + 50) }
+    }
 
-    /** Width that fits the song, up to 460 design units. */
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); Glass.register(this); post(minute) }
+    override fun onDetachedFromWindow() { Glass.unregister(this); removeCallbacks(spin); removeCallbacks(minute); super.onDetachedFromWindow() }
+
+    /** Width of the time and temperature part, in pixels, with its leading divider. Zero when both are off. */
+    private fun briefWidth(): Float {
+        val i = info ?: return 0f
+        val wx = i.briefWeather()
+        val tm = i.briefTime()
+        if (wx == null && tm == null) return 0f
+        var w = Theme.px(16f + 2f + 16f)
+        if (wx != null) w += Theme.px(30f + 8f) + brief.measureText(wx.second)
+        if (wx != null && tm != null) w += Theme.px(12f + 2f + 12f)
+        if (tm != null) w += brief.measureText(tm)
+        return w
+    }
+
+    /** Width that fits the song, up to 460 design units, plus the time and temperature. */
     fun fitWidth(): Float {
         val s = NowPlaying.song ?: return 0f
         val tw = maxOf(title.measureText(s.title), artist.measureText(s.artist)) / Theme.u
-        return (12f + 64f + 16f + tw + 16f + 56f + 16f).coerceAtMost(460f)
+        return (12f + 64f + 16f + tw + 16f + 56f + 16f).coerceAtMost(460f) + briefWidth() / Theme.u
     }
 
     fun update() { removeCallbacks(spin); post(spin); invalidate() }
@@ -525,7 +546,9 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
         val bd = 56f * u
         val bx = w - 16f * u - bd
         val tx = ax + ad + 16f * u
-        val tw = bx - 16f * u - tx
+        val bw = briefWidth()
+        val tw = bx - 16f * u - bw - tx
+        if (bw > 0f) drawBrief(c, bx - 16f * u - bw, h)
         c.drawText(title.fit(s.title, tw), tx, h / 2 - 4f * u, title)
         c.drawText(artist.fit(s.artist, tw), tx, h / 2 - 4f * u - artist.ascent() + 2f * u, artist)
         // The button's gradient only changes with its place or the accent; the pill redraws every frame while the cover turns.
@@ -541,5 +564,32 @@ class NowPlayingPill(ctx: Context) : FocusView(ctx) {
         ic.setBounds((bx + (bd - isz) / 2).toInt(), ((h - isz) / 2).toInt(), (bx + (bd + isz) / 2).toInt(), ((h + isz) / 2).toInt())
         ic.draw(c)
         drawRing(c, h / 2)
+    }
+
+    /** Divider, weather icon and temperature, a short divider, then the time, from [x0]. */
+    private fun drawBrief(c: Canvas, x0: Float, h: Float) {
+        val i = info ?: return
+        val u = Theme.u
+        line.color = Theme.withAlpha(Theme.TEXT, 0.16f)
+        var x = x0 + 16f * u
+        c.drawRect(x, h / 2 - 22f * u, x + 2f * u, h / 2 + 22f * u, line)
+        x += 2f * u + 16f * u
+        val wx = i.briefWeather()
+        val tm = i.briefTime()
+        val y = baseline(brief, h / 2)
+        if (wx != null) {
+            val s = (30f * u).toInt()
+            wx.first.setBounds(x.toInt(), ((h - s) / 2).toInt(), x.toInt() + s, ((h + s) / 2).toInt())
+            wx.first.draw(c)
+            x += s + 8f * u
+            c.drawText(wx.second, x, y, brief)
+            x += brief.measureText(wx.second)
+        }
+        if (wx != null && tm != null) {
+            x += 12f * u
+            c.drawRect(x, h / 2 - 14f * u, x + 2f * u, h / 2 + 14f * u, line)
+            x += 2f * u + 12f * u
+        }
+        if (tm != null) c.drawText(tm, x, y, brief)
     }
 }
