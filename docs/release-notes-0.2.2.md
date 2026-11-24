@@ -10,5 +10,5 @@ A hotfix for Scene 0.2.1.
 
 ### Changes
 - Your library and Newly popular are separate rows again
-- Newly popular has its own See all, with filters for films, series or anime, the time window, the order and seen titles. The header slides away while you scroll
+- Newly popular has its own See all with every title in the window, not only the most popular share the row shows. Filter by films, series or anime, the time window, the order and seen titles. The header slides away while you scroll
 - Coming up is off by default. Turn it on in Settings, Coming Up

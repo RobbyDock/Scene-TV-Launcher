@@ -281,6 +281,8 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
     private var collapsed = false
     private var closed = false
     private var gen = 0
+    private var titles = emptyList<NewlyPopular.Title>()
+    private var added = 0
 
     private companion object {
         const val PW = 200f
@@ -290,6 +292,7 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
         const val EDGE = 96f
         const val TOP = 268f
         val SORTS = listOf("Top rated", "Popular", "Newest")
+        const val PAGE = 70
     }
 
     init {
@@ -350,7 +353,7 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
         collapse(false)
         note.text = "Loading"
         val m = NewlyPopular.MONTHS[months]
-        Net.run({ NewlyPopular.list(m, 7) }) { all ->
+        Net.run({ NewlyPopular.list(m, 7, full = true) }) { all ->
             if (closed || g != gen) return@run
             var list = if (unseen) NewlyPopular.visible(act, all ?: emptyList(), true) else all ?: emptyList()
             if (kind >= 0) list = list.filter { it.kind == NewlyPopular.KINDS[kind] }
@@ -370,16 +373,27 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
     }
 
     private fun show(list: List<NewlyPopular.Title>) {
-        for ((i, t) in list.withIndex()) {
+        titles = list
+        added = 0
+        more()
+    }
+
+    /** Adds the next page of cards; focus near the end adds another. */
+    private fun more() {
+        val end = minOf(titles.size, added + PAGE)
+        for (i in added until end) {
+            val t = titles[i]
             val card = act.home.bindNew(PosterCard(act), t)
-            card.setOnFocusChangeListener { _, has -> if (has && i < cols) scroller.smoothScrollTo(0, 0) }
+            card.setOnFocusChangeListener { _, has ->
+                if (!has) return@setOnFocusChangeListener
+                if (i >= added - cols * 2) more()
+                if (i < cols) scroller.smoothScrollTo(0, 0)
+            }
             // Up from the top row goes to the pills, even while they slide back in.
-            if (i < cols) {
-                card.setOnKeyListener { _, code, e ->
-                    if (code == android.view.KeyEvent.KEYCODE_DPAD_UP && e.action == android.view.KeyEvent.ACTION_DOWN) {
-                        collapse(false); bar.getChildAt(0)?.requestFocus(); true
-                    } else false
-                }
+            if (i < cols) card.setOnKeyListener { _, code, e ->
+                if (code == android.view.KeyEvent.KEYCODE_DPAD_UP && e.action == android.view.KeyEvent.ACTION_DOWN) {
+                    collapse(false); bar.getChildAt(0)?.requestFocus(); true
+                } else false
             }
             grid.addView(card, LayoutParams(Theme.ipx(pw), Theme.ipx(ph)).apply {
                 leftMargin = Theme.ipx(EDGE + (i % cols) * (pw + GX))
@@ -387,7 +401,8 @@ class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity
             })
             Motion.pop(card, (i % cols) * 18L)
         }
-        grid.minimumHeight = Theme.ipx(TOP + ((list.size + cols - 1) / cols) * (ph + GY) + 120f)
+        added = end
+        grid.minimumHeight = Theme.ipx(TOP + ((added + cols - 1) / cols) * (ph + GY) + 120f)
     }
 
     override fun onClosed() { closed = true }

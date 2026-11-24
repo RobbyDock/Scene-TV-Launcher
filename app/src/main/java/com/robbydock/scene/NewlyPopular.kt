@@ -127,21 +127,25 @@ object NewlyPopular {
             Demo.shelf("yours", 0, 0, 1000).flatMap { listOf(it.id, NAME + nameKey(it.name)) }).toSet()
         else Stremio.seenIds
 
-    /** Titles released in the last [months] for the kinds in [mask]: each kind best rated first, then taking turns. */
-    fun list(months: Int, mask: Int): List<Title> {
+    /**
+     * Titles released in the last [months] for the kinds in [mask]: each kind best rated first, then
+     * taking turns. The Home row keeps each kind's most popular share; [full] keeps every title and
+     * reads deeper, for See all.
+     */
+    fun list(months: Int, mask: Int, full: Boolean = false): List<Title> {
         val now = System.currentTimeMillis()
         val from = Calendar.getInstance().apply { add(Calendar.MONTH, -months) }
         val years = listOf(from.get(Calendar.YEAR), Calendar.getInstance().get(Calendar.YEAR)).distinct()
         val start = from.timeInMillis
         val jobs = kinds(mask).map { k ->
-            if (k == ANIME) seasonsSince(from).flatMap { (y, season) -> listOf(0, 20, 40, 60).map { o -> lookups.submit(Callable { animePage(y, season, o) }) } }
-            else years.flatMap { y -> listOf(0, 50, 100).map { s -> lookups.submit(Callable { page(k, y, s) }) } }
+            if (k == ANIME) seasonsSince(from).flatMap { (y, season) -> (0 until if (full) 8 else 4).map { o -> lookups.submit(Callable { animePage(y, season, o * 20) }) } }
+            else years.flatMap { y -> (0 until if (full) 6 else 3).map { s -> lookups.submit(Callable { page(k, y, s * 50) }) } }
         }
         val lists = jobs.map { pages ->
             val fresh = pages.flatMap { try { it.get() } catch (e: Exception) { emptyList() } }
                 .filter { it.released in start..now }.distinctBy { it.id }.sortedByDescending { it.pop }
             // The most popular share, best rated first.
-            fresh.take(maxOf(MIN_KEPT, Math.ceil(fresh.size * SHARE).toInt()))
+            (if (full) fresh else fresh.take(maxOf(MIN_KEPT, Math.ceil(fresh.size * SHARE).toInt())))
                 .sortedWith(compareByDescending<Title> { it.rating > 0f }.thenByDescending { it.rating }.thenByDescending { it.pop })
         }
         // The kinds take turns, so each gets the same share of the row.
