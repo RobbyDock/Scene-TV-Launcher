@@ -118,7 +118,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private val upCards = ArrayList<ArtCard>()
     /** Open tabs of the shared rows. Home opens on Continue watching and the library. */
     private var topTab = TAB_FIRST
-    private var libTab = TAB_FIRST
     /** The Coming up card the spotlight shows. */
     private var upSel = 0
     /** The open tab's pill in the top row's header, or null when the row has one tab. */
@@ -693,6 +692,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     /** Popular recent titles, best rated first, each with its rating. */
     private fun buildNewStrip(y: Float, rowTarget: Float): Float {
+        content.place(rowHeader("Newly popular"), EDGE, y, -1f, 44f)
         val strip = Strip(act, 200f, 28f)
         content.place(strip, EDGE, y + 72f, Theme.W - EDGE, 300f)
         fun keep(v: FocusView, key: String) {
@@ -705,22 +705,35 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         val list = NewlyPopular.current(act)?.let { NewlyPopular.visible(act, it) }
         if (list == null) for (i in 0 until 6) keep(PosterCard(act).apply { loading = true }, "new:$i")
         else if (list.isEmpty()) content.place(act.label("Nothing new found. Try a longer window.", 28f, Theme.TEXT_DIM), EDGE, y + 72f, 1200f, 40f)
-        else for (t in list.take(NewlyPopular.ROW)) keep(PosterCard(act).apply {
-            title = t.name
-            year = t.label + "  ·  " + monthYear.format(java.util.Date(t.released))
-            rating = if (t.rating > 0f) String.format(java.util.Locale.US, "%.1f", t.rating) else "NEW"
-            contentDescription = t.name + if (t.rating > 0f) ", rated $rating" else ""
-            loading = true
-            Net.first({ NewlyPopular.poster(act, t) }) { url ->
-                if (url == null) loading = false else Images.load(url, Theme.ipx(260f)) { b -> loading = false; art = b }
-            }
-            setOnClickListener { act.openDetail(t.type, t.id) }
-            setOnLongClickListener { newMenu(t); true }
-        }, "new:${t.id}")
+        else {
+            for (t in list.take(NewlyPopular.ROW)) keep(PosterCard(act).also { bindNew(it, t) }, "new:${t.id}")
+            // The titles after the row fill the See all collage.
+            keep(SeeAllCard(act).apply {
+                line = "Newly popular"
+                contentDescription = "See all, Newly popular"
+                for ((i, t) in list.drop(NewlyPopular.ROW).ifEmpty { list }.take(4).withIndex())
+                    Net.first({ NewlyPopular.poster(act, t) }) { url -> if (url != null) Images.load(url, Theme.ipx(110f)) { b -> art(i, b) } }
+                setOnClickListener { act.push(NewlyPopularScreen(act)) }
+            }, "new:all")
+        }
         return y + 72f + 300f + 56f
     }
 
     private val monthYear = java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.getDefault())
+
+    /** Fills a poster card for a Newly popular title: name, kind and month, rating chip, OK and hold. */
+    fun bindNew(card: PosterCard, t: NewlyPopular.Title) = card.apply {
+        title = t.name
+        year = t.label + "  ·  " + monthYear.format(java.util.Date(t.released))
+        rating = if (t.rating > 0f) String.format(java.util.Locale.US, "%.1f", t.rating) else "NEW"
+        contentDescription = t.name + if (t.rating > 0f) ", rated $rating" else ""
+        loading = true
+        Net.first({ NewlyPopular.poster(act, t) }) { url ->
+            if (url == null) loading = false else Images.load(url, Theme.ipx(260f)) { b -> loading = false; art = b }
+        }
+        setOnClickListener { act.openDetail(t.type, t.id) }
+        setOnLongClickListener { newMenu(t); true }
+    }
 
     private fun newMenu(t: NewlyPopular.Title) {
         Net.first({ NewlyPopular.poster(act, t) }) { url -> showNewMenu(t, url) }
@@ -799,7 +812,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         var y = start
         val newOn = NewlyPopular.on(act) && act.spotlightOn && Watch.signedIn(act)
         if (newOn && NewlyPopular.current(act) == null) NewlyPopular.load(act) { rebuild() }
-        if (!newOn) libTab = TAB_FIRST
         var newPlaced = false
         for (shelf in Library.shown(act)) {
             val list = Library.cached(shelf.key)
@@ -807,11 +819,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             // Still empty after a few tries: the row leaves Home.
             if (list != null && list.isEmpty()) continue
             val rowTarget = target - (y - rowsTop)
-            if (newOn && !newPlaced) {
-                newPlaced = true
-                rowTabs(y, rowTarget, "libhead", listOf(shelf.title, "Newly popular"), libTab, { libTab = it })
-                if (libTab == TAB_SECOND) { y = buildNewStrip(y, rowTarget); continue }
-            } else content.place(rowHeader(shelf.title), EDGE, y, -1f, 44f)
+            content.place(rowHeader(shelf.title), EDGE, y, -1f, 44f)
             val strip = Strip(act, 200f, 28f)
             content.place(strip, EDGE, y + 72f, Theme.W - EDGE, 300f)
             fun keep(v: FocusView, key: String) {
@@ -840,12 +848,13 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
                 }, "lib:${shelf.key}:all")
             }
             y += 72f + 300f + 56f
+            // Newly popular gets its own row under the first library row.
+            if (newOn && !newPlaced) {
+                newPlaced = true
+                y = buildNewStrip(y, target - (y - rowsTop))
+            }
         }
-        if (newOn && !newPlaced) {
-            val rowTarget = target - (y - rowsTop)
-            rowTabs(y, rowTarget, "libhead", listOf("Newly popular"), TAB_SECOND, {})
-            y = buildNewStrip(y, rowTarget)
-        }
+        if (newOn && !newPlaced) y = buildNewStrip(y, target - (y - rowsTop))
         return y
     }
 
@@ -1484,14 +1493,14 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private fun select2Focus() {
         val row = if (topTab == TAB_SECOND) upCards else cards
         val card = row.getOrNull(if (topTab == TAB_SECOND) upSel else selected) ?: row.firstOrNull() ?: return
-        for (i in 0 until buttons.childCount) buttons.getChildAt(i).nextFocusDownId = card.id
+        // Down from the buttons stops at the row's tabs first, so they are never skipped.
+        val down = topTabPill ?: card
+        for (i in 0 until buttons.childCount) buttons.getChildAt(i).nextFocusDownId = down.id
         val up = topTabPill ?: primaryButton ?: return
         for (c in row) c.nextFocusUpId = up.id
         topTabPill?.let { tab ->
             primaryButton?.let { pb -> tab.nextFocusUpId = pb.id }
             tab.nextFocusDownId = card.id
-            // The window chip after the tabs goes the same ways.
-            keyed["upchip"]?.let { it.nextFocusUpId = tab.nextFocusUpId; it.nextFocusDownId = card.id }
             keyed["tophead:${1 - topTab}"]?.let { it.nextFocusUpId = tab.nextFocusUpId; it.nextFocusDownId = card.id }
         }
     }

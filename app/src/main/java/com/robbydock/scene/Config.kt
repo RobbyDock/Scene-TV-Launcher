@@ -40,7 +40,7 @@ class Config {
     /** Spotlight title font, an index into [Theme.TITLE_FONTS]. */
     var titleFont = 0
     /** Coming up row on Home, how far ahead it looks (an index into [Coming.AHEAD_NAMES]) and the series hidden from it. */
-    var comingOn = true
+    var comingOn = false
     var comingAhead = 1
     var comingHidden = ArrayList<String>()
     /** Newly popular: on, window (0 three, 1 six, 2 twelve months), kinds shown (bits: 1 films, 2 series, 4 anime), unseen only. */
@@ -184,7 +184,7 @@ class Config {
         splash = o.optBoolean("splash", true)
         focusStyle = o.optInt("focusStyle", 0).coerceIn(0, 2)
         titleFont = o.optInt("titleFont", 0).coerceIn(0, Theme.TITLE_FONTS.size - 1)
-        comingOn = o.optBoolean("comingOn", true)
+        comingOn = o.optBoolean("comingOn", false)
         // Older settings had three choices, the last meaning every announced date.
         comingAhead = if (o.has("comingWindow")) o.optInt("comingWindow", 1).coerceIn(0, 3) else when (o.optInt("comingAhead", 1)) { 0 -> 0; 2 -> 3; else -> 1 }
         newOn = o.optBoolean("newOn", true)

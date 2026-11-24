@@ -99,16 +99,16 @@ object NewlyPopular {
         ready = null
     }
 
-    /** [list] without titles the profile has seen, when it asks for unseen titles only. */
-    fun visible(act: HomeActivity, list: List<Title>): List<Title> {
-        if (!act.cfg.newUnseen) return list
+    /** [list] without titles the profile has seen, when [unseenOnly], as the profile asks by default. */
+    fun visible(act: HomeActivity, list: List<Title>, unseenOnly: Boolean = act.cfg.newUnseen): List<Title> {
+        if (!unseenOnly) return list
         val seen = seenIds(act)
         // Filter each kind on its own, then take turns again, so the mix stays even.
         return takeTurns(KINDS.map { k -> list.filter { it.kind == k && it.id !in seen && it.names.none { n -> NAME + n in seen } } })
     }
 
     /** Merges [lists] one item from each in turn. */
-    private fun takeTurns(lists: List<List<Title>>): List<Title> {
+    fun takeTurns(lists: List<List<Title>>): List<Title> {
         val out = ArrayList<Title>()
         var i = 0
         while (lists.any { i < it.size }) { for (l in lists) if (i < l.size) out.add(l[i]); i++ }

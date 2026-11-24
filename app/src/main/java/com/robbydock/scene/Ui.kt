@@ -1209,7 +1209,8 @@ class ArtCard(ctx: Context) : FocusView(ctx) {
             val bw = tb.measureText(badge) + Theme.px(28f)
             val bh = Theme.px(40f)
             val bx = Theme.px(18f)
-            if (badgeSoft) fill.color = Theme.withAlpha(Color.WHITE, 0.22f) else Theme.accentFill(fill, bx, bx, bx + bw, bx + bh)
+            // A soft badge is dark glass, so white text reads on bright art too.
+            if (badgeSoft) fill.color = Color.argb(184, 18, 12, 20) else Theme.accentFill(fill, bx, bx, bx + bw, bx + bh)
             c.drawRoundRect(bx, bx, bx + bw, bx + bh, bh / 2, bh / 2, fill)
             fill.shader = null
             tb.color = if (badgeSoft) Color.WHITE else Theme.onAccent

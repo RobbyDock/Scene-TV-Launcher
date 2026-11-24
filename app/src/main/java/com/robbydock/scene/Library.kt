@@ -256,6 +256,144 @@ class LibraryScreen(act: HomeActivity, private var tab: Int = 0) : OverlayBase(a
 }
 
 /**
+ * Every Newly popular title in a grid, opened from See all at the end of the row. Pills on top filter
+ * by kind, window, order and seen titles, without changing the Home row. The header slides away
+ * while the grid scrolls, as in the library.
+ */
+class NewlyPopularScreen(act: HomeActivity) : OverlayBase(act, 1f), HomeActivity.Closable {
+    private val scroller = ScrollView(act).apply {
+        isVerticalScrollBarEnabled = false
+        isVerticalFadingEdgeEnabled = true
+        setFadingEdgeLength(Theme.ipx(60f))
+    }
+    private val grid = FrameLayout(act).apply { clipChildren = false }
+    private val header = FrameLayout(act).apply { clipChildren = false }
+    private val bar = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false }
+    private val note = act.label("", 28f, Theme.TEXT_DIM)
+    private val cols = ((Theme.W - 2 * EDGE + GX) / (PW + GX)).toInt().coerceAtLeast(4)
+    private val pw = (Theme.W - 2 * EDGE - (cols - 1) * GX) / cols
+    private val ph = pw * PH / PW
+    /** -1 every kind, else an index into [NewlyPopular.KINDS]. */
+    private var kind = -1
+    private var months = act.cfg.newMonths
+    private var sort = 0
+    private var unseen = act.cfg.newUnseen
+    private var collapsed = false
+    private var closed = false
+    private var gen = 0
+
+    private companion object {
+        const val PW = 200f
+        const val PH = 300f
+        const val GX = 40f
+        const val GY = 44f
+        const val EDGE = 96f
+        const val TOP = 268f
+        val SORTS = listOf("Top rated", "Popular", "Newest")
+    }
+
+    init {
+        isFocusable = false
+        scroller.addView(grid, LayoutParams(-1, -2))
+        place(act.clipBox(scroller), 0f, 0f, Theme.W, Theme.H)
+        place(note, EDGE, TOP + 40f, 1700f, 40f)
+        val scrim = View(act).apply {
+            background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Theme.bg, Theme.bg, Theme.withAlpha(Theme.bg, 0f)))
+        }
+        header.place(scrim, 0f, 0f, Theme.W, TOP + 20f)
+        val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        head.addView(android.widget.ImageView(act).apply { setImageDrawable(act.icon(R.drawable.ic_star, Theme.accent)) },
+            LinearLayout.LayoutParams(Theme.ipx(56f), Theme.ipx(56f)).apply { rightMargin = Theme.ipx(22f) })
+        head.addView(act.label("Newly popular", 60f, Theme.TEXT, Theme.BOLD), LinearLayout.LayoutParams(-2, -2))
+        header.place(head, EDGE, 48f, 1700f, 90f)
+        header.place(bar, EDGE, 150f, 1700f, 80f)
+        place(header, 0f, 0f, Theme.W, TOP + 20f)
+        scroller.setOnScrollChangeListener { _, _, y, _, _ -> collapse(y > Theme.px(48f)) }
+        buildBar(0)
+        fill()
+    }
+
+    /** Slides the header away while the grid is scrolled, and back at the top. */
+    private fun collapse(on: Boolean) {
+        if (on == collapsed) return
+        collapsed = on
+        header.animate().cancel()
+        header.animate().alpha(if (on) 0f else 1f).translationY(if (on) -Theme.px(60f) else 0f).setDuration(Theme.MEDIUM_MS)
+            .setInterpolator(Theme.EASE).start()
+        for (i in 0 until bar.childCount) bar.getChildAt(i).isFocusable = !on
+    }
+
+    /** Kind pills, then the window, order and seen pills, which step through their choices. [focus] is the pill to focus. */
+    private fun buildBar(focus: Int) {
+        bar.removeAllViews()
+        fun pill(text: String, icon: Int, on: Boolean, run: () -> Unit) {
+            val i = bar.childCount
+            val b = PillButton(act, text, icon, on)
+            b.setOnClickListener { run(); buildBar(i); fill() }
+            bar.addView(b, LinearLayout.LayoutParams(-2, Theme.ipx(80f)).apply { rightMargin = Theme.ipx(16f) })
+        }
+        pill("All", R.drawable.ic_apps, kind == -1) { kind = -1 }
+        val icons = intArrayOf(R.drawable.ic_movie, R.drawable.ic_tv, R.drawable.ic_auto_awesome)
+        for ((i, n) in NewlyPopular.KIND_NAMES.withIndex()) pill(n, icons[i], kind == i) { kind = i }
+        pill("${NewlyPopular.MONTHS[months]} months", R.drawable.ic_schedule, false) { months = (months + 1) % NewlyPopular.MONTHS.size }
+        pill(SORTS[sort], R.drawable.ic_sort, false) { sort = (sort + 1) % SORTS.size }
+        pill(if (unseen) "Unseen" else "Seen too", if (unseen) R.drawable.ic_visibility_off else R.drawable.ic_visibility, false) { unseen = !unseen }
+        post { if (!closed) bar.getChildAt(focus)?.requestFocus() }
+    }
+
+    /** Loads the window's titles for every kind, then filters, orders and lays them out. */
+    private fun fill() {
+        val g = ++gen
+        grid.removeAllViews()
+        scroller.scrollTo(0, 0)
+        collapse(false)
+        note.text = "Loading"
+        val m = NewlyPopular.MONTHS[months]
+        Net.run({ NewlyPopular.list(m, 7) }) { all ->
+            if (closed || g != gen) return@run
+            var list = if (unseen) NewlyPopular.visible(act, all ?: emptyList(), true) else all ?: emptyList()
+            if (kind >= 0) list = list.filter { it.kind == NewlyPopular.KINDS[kind] }
+            list = when (sort) {
+                // Popularity counts differ by source, so each kind is ordered on its own and they take turns.
+                1 -> NewlyPopular.takeTurns(NewlyPopular.KINDS.map { k -> list.filter { it.kind == k }.sortedByDescending { it.pop } })
+                2 -> list.sortedByDescending { it.released }
+                else -> list
+            }
+            note.text = when {
+                all == null -> "Couldn't load titles"
+                list.isEmpty() -> "Nothing here. Try a longer window."
+                else -> ""
+            }
+            show(list)
+        }
+    }
+
+    private fun show(list: List<NewlyPopular.Title>) {
+        for ((i, t) in list.withIndex()) {
+            val card = act.home.bindNew(PosterCard(act), t)
+            card.setOnFocusChangeListener { _, has -> if (has && i < cols) scroller.smoothScrollTo(0, 0) }
+            // Up from the top row goes to the pills, even while they slide back in.
+            if (i < cols) {
+                card.setOnKeyListener { _, code, e ->
+                    if (code == android.view.KeyEvent.KEYCODE_DPAD_UP && e.action == android.view.KeyEvent.ACTION_DOWN) {
+                        collapse(false); bar.getChildAt(0)?.requestFocus(); true
+                    } else false
+                }
+            }
+            grid.addView(card, LayoutParams(Theme.ipx(pw), Theme.ipx(ph)).apply {
+                leftMargin = Theme.ipx(EDGE + (i % cols) * (pw + GX))
+                topMargin = Theme.ipx(TOP + (i / cols) * (ph + GY))
+            })
+            Motion.pop(card, (i % cols) * 18L)
+        }
+        grid.minimumHeight = Theme.ipx(TOP + ((list.size + cols - 1) / cols) * (ph + GY) + 120f)
+    }
+
+    override fun onClosed() { closed = true }
+}
+
+/**
  * Last card of a library row: a dim 2 by 2 collage of the titles that come next, with See all and
  * an accent arrow over it.
  */
@@ -273,6 +411,9 @@ class SeeAllCard(ctx: android.content.Context) : FocusView(ctx) {
     override val restZ = 8f
     override val hotZ = 30f
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, Theme.px(Theme.R_CHIP))
+
+    /** Sets one of the four collage cells. */
+    fun art(i: Int, b: Bitmap?) { if (i in 0..3) { art[i] = b; invalidate() } }
 
     /** Loads up to four posters for the collage. */
     fun posters(list: List<SearchHit>) {
