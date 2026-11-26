@@ -634,8 +634,6 @@ class HomeActivity : Activity() {
 
     /** The watched series Coming up last looked at. */
     private var comingSig = ""
-    /** How many seen titles Newly popular last left out. */
-    private var seenCount = 0
 
     fun refreshContinue(force: Boolean, maxAge: Long = 45_000L) {
         if (Demo.on) return
@@ -668,9 +666,6 @@ class HomeActivity : Activity() {
                 // The watched series changed: Coming up looks again.
                 val watched = Stremio.watching.joinToString(",") { it.id }
                 if (watched != comingSig) { comingSig = watched; Coming.reset(); home.rebuild() }
-                // The library changed: Newly popular leaves out what is now seen.
-                else if (Stremio.seenIds.size != seenCount) home.rebuild()
-                seenCount = Stremio.seenIds.size
             } else if (Watch.signedOutByApp(this)) {
                 // The app ended Scene's sign-in, for example after a password change. Home says so
                 // where Continue watching was, and asks once; nothing pops up over what you're doing.

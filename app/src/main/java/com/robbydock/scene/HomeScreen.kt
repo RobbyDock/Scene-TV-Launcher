@@ -690,67 +690,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         return open
     }
 
-    /** Popular recent titles, best rated first, each with its rating. */
-    private fun buildNewStrip(y: Float, rowTarget: Float): Float {
-        content.place(rowHeader("Newly popular"), EDGE, y, -1f, 44f)
-        val strip = Strip(act, 200f, 28f)
-        content.place(strip, EDGE, y + 72f, Theme.W - EDGE, 300f)
-        fun keep(v: FocusView, key: String) {
-            v.focusKey = key
-            keyed[key] = v
-            keyed.putIfAbsent("pin:0", v)
-            scrollTarget[v] = rowTarget
-            strip.add(v)
-        }
-        val list = NewlyPopular.current(act)?.let { NewlyPopular.visible(act, it) }
-        if (list == null) for (i in 0 until 6) keep(PosterCard(act).apply { loading = true }, "new:$i")
-        else if (list.isEmpty()) content.place(act.label("Nothing new found. Try a longer window.", 28f, Theme.TEXT_DIM), EDGE, y + 72f, 1200f, 40f)
-        else {
-            for (t in list.take(NewlyPopular.ROW)) keep(PosterCard(act).also { bindNew(it, t) }, "new:${t.id}")
-            // The titles after the row fill the See all collage.
-            keep(SeeAllCard(act).apply {
-                line = "Newly popular"
-                contentDescription = "See all, Newly popular"
-                for ((i, t) in list.drop(NewlyPopular.ROW).ifEmpty { list }.take(4).withIndex())
-                    Net.first({ NewlyPopular.poster(act, t) }) { url -> if (url != null) Images.load(url, Theme.ipx(110f)) { b -> art(i, b) } }
-                setOnClickListener { act.push(NewlyPopularScreen(act)) }
-            }, "new:all")
-        }
-        return y + 72f + 300f + 56f
-    }
-
-    private val monthYear = java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.getDefault())
-
-    /** Fills a poster card for a Newly popular title: name, kind and month, rating chip, OK and hold. */
-    fun bindNew(card: PosterCard, t: NewlyPopular.Title) = card.apply {
-        title = t.name
-        year = t.label + "  ·  " + monthYear.format(java.util.Date(t.released))
-        rating = if (t.rating > 0f) String.format(java.util.Locale.US, "%.1f", t.rating) else "NEW"
-        contentDescription = t.name + if (t.rating > 0f) ", rated $rating" else ""
-        loading = true
-        Net.first({ NewlyPopular.poster(act, t) }) { url ->
-            if (url == null) loading = false else Images.load(url, Theme.ipx(260f)) { b -> loading = false; art = b }
-        }
-        setOnClickListener { act.openDetail(t.type, t.id) }
-        setOnLongClickListener { newMenu(t); true }
-    }
-
-    private fun newMenu(t: NewlyPopular.Title) {
-        Net.first({ NewlyPopular.poster(act, t) }) { url -> showNewMenu(t, url) }
-    }
-
-    private fun showNewMenu(t: NewlyPopular.Title, poster: String?) {
-        val app = Watch.name(act)
-        val series = t.type == "series"
-        val sub = listOf(t.label, monthYear.format(java.util.Date(t.released)),
-            if (t.rating > 0f) (if (t.anime) "Kitsu " else "IMDb ") + String.format(java.util.Locale.US, "%.1f", t.rating) else "Not rated yet").joinToString("  ·  ")
-        act.push(Sheet(act, t.name, sub, null, listOf(
-            Sheet.Action("Play", R.drawable.ic_play_arrow, "In $app") { act.openDetail(t.type, t.id) },
-            Sheet.Action(if (series) "Episode list" else "Details", if (series) R.drawable.ic_list else R.drawable.ic_info, "In $app") { act.openDetail(t.type, t.id) },
-            Sheet.Action("Newly Popular settings", R.drawable.ic_settings, "Window, films, series or anime") { act.openSettings("newpop") },
-        ), posterUrl = poster ?: ""))
-    }
-
     /** Next episodes of followed series, soonest first, in the top row's strip. */
     private fun buildComingCards(strip: Strip) {
         val list = Coming.ready
@@ -804,15 +743,11 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     }
 
     /**
-     * The Watch With app's library rows, each ending in a See all card. The first has Newly
-     * popular as a second tab, or Newly popular stands alone without a library. Returns where
-     * the next row starts.
+     * The Watch With app's library rows, each ending in a See all card. Returns where the next
+     * row starts.
      */
     private fun buildLibrary(start: Float, target: Float, rowsTop: Float): Float {
         var y = start
-        val newOn = NewlyPopular.on(act) && act.spotlightOn && Watch.signedIn(act)
-        if (newOn && NewlyPopular.current(act) == null) NewlyPopular.load(act) { rebuild() }
-        var newPlaced = false
         for (shelf in Library.shown(act)) {
             val list = Library.cached(shelf.key)
             if (list == null) Library.load(act, shelf.key) { rebuild() }
@@ -848,13 +783,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
                 }, "lib:${shelf.key}:all")
             }
             y += 72f + 300f + 56f
-            // Newly popular gets its own row under the first library row.
-            if (newOn && !newPlaced) {
-                newPlaced = true
-                y = buildNewStrip(y, target - (y - rowsTop))
-            }
         }
-        if (newOn && !newPlaced) y = buildNewStrip(y, target - (y - rowsTop))
         return y
     }
 

@@ -22,7 +22,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
 
     private companion object {
         /** Pane titles whose settings live in each profile's own file. */
-        val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Focus Style", "Title Font", "Coming Up", "Newly Popular", "Clock & Weather", "Spotlight",
+        val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Focus Style", "Title Font", "Coming Up", "Clock & Weather", "Spotlight",
             "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "App Categories", "Locked Apps", "Open on Start", "Your Library", "Export Settings", "Restore Settings", "Reset Home")
         /** Pane titles whose settings every profile shares. */
         val ALL_PROFILES = setOf("Profiles", "Show in App Launcher", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
@@ -227,9 +227,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         if (Watch.isStremio(act)) row("coming", R.drawable.ic_event_upcoming, "Coming Up", comingSummary()) { paneComing() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("coming0")?.requestFocus() }
-        }
-        if (Watch.isStremio(act)) row("newpop", R.drawable.ic_star, "Newly Popular", newSummary()) { paneNewPop() }.apply {
-            setOnClickListener { pane.findViewWithTag<View>("newpop0")?.requestFocus() }
         }
         val cwCount = act.hiddenContinueCount
         row("cwhidden", R.drawable.ic_movie_off, "Hidden Titles", if (cwCount == 0) "None" else "$cwCount hidden") { paneCwHidden() }.apply {
@@ -813,71 +810,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 Sheet.Action(s.name, R.drawable.ic_visibility, "Show again") { cfg.comingHidden.remove(s.id); again() }
             }))
         }
-    }
-
-    private fun newSummary() = if (!act.cfg.newOn) "Off" else NewlyPopular.WINDOW_NAMES[act.cfg.newMonths]
-
-    private fun paneNewPop() {
-        val cfg = act.cfg
-        val kids = Profiles.current.kids
-        paneHeader("Newly Popular", "Popular recent films, series and anime, best rated first.")
-        val again = {
-            act.save()
-            NewlyPopular.reset()
-            act.home.rebuild()
-            refresh("newpop")
-        }
-        // The row as it looks on Home, smaller: the five best rated posters.
-        val prev = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; alpha = if (NewlyPopular.on(act)) 1f else 0.45f }
-        pane.place(prev, 48f, top1, PANE_W - 96f, 180f)
-        val cards = (0 until 5).map { i ->
-            PosterCard(act).apply { isFocusable = false; isClickable = false; loading = true }.also {
-                prev.addView(it, LinearLayout.LayoutParams(Theme.ipx(120f), -1).apply { if (i > 0) leftMargin = Theme.ipx(16f) })
-            }
-        }
-        val fill = { list: List<NewlyPopular.Title> ->
-            for ((i, card) in cards.withIndex()) {
-                val t = list.getOrNull(i)
-                if (t == null) { card.loading = false; card.visibility = View.INVISIBLE; continue }
-                card.rating = if (t.rating > 0f) String.format(java.util.Locale.US, "%.1f", t.rating) else "NEW"
-                Net.first({ NewlyPopular.poster(act, t) }) { url ->
-                    if (url == null) card.loading = false else Images.load(url, Theme.ipx(160f)) { b -> card.loading = false; card.art = b }
-                }
-            }
-        }
-        val ready = NewlyPopular.current(act)
-        if (ready != null) fill(NewlyPopular.visible(act, ready))
-        else {
-            val months = NewlyPopular.MONTHS[cfg.newMonths]
-            val kinds = cfg.newKinds
-            Net.run({ NewlyPopular.list(months, kinds) }) { if (prev.isAttachedToWindow) fill(NewlyPopular.visible(act, it ?: emptyList())) }
-        }
-        val add = optionColumn(top1 + 204f, "newpop")
-        add(R.drawable.ic_star, "Show on Home", "", SettingRow.Trail.SWITCH) {
-            if (kids) { act.toast("Not on Kids profiles"); return@add }
-            cfg.newOn = !cfg.newOn
-            again()
-        }.apply { checked = cfg.newOn && !kids; alpha = if (kids) 0.45f else 1f }
-        add(R.drawable.ic_schedule, "Released In", NewlyPopular.WINDOW_NAMES[cfg.newMonths], SettingRow.Trail.CHEVRON) {
-            act.push(Sheet(act, "Released In", "Newly Popular", null, NewlyPopular.WINDOW_NAMES.mapIndexed { i, n ->
-                Sheet.Action(n, R.drawable.ic_schedule, NewlyPopular.WINDOW_SUBS[i], checked = cfg.newMonths == i) { cfg.newMonths = i; again() }
-            }))
-        }.apply { alpha = if (cfg.newOn) 1f else 0.45f }
-        add(R.drawable.ic_movie, "Show", NewlyPopular.kindsText(cfg.newKinds), SettingRow.Trail.CHEVRON) {
-            // Ticks stay open. The pane applies the change once the sheet closes.
-            val was = cfg.newKinds
-            val icons = intArrayOf(R.drawable.ic_movie, R.drawable.ic_tv, R.drawable.ic_auto_awesome)
-            act.push(Sheet(act, "Show", "Newly Popular  ·  They take turns in the row", null, NewlyPopular.KIND_NAMES.mapIndexed { i, n ->
-                val bit = 1 shl i
-                Sheet.Action(n, icons[i], NewlyPopular.KIND_SUBS[i], checked = cfg.newKinds and bit != 0, on = { cfg.newKinds and bit != 0 }) {
-                    if (cfg.newKinds == bit) act.toast("Keep at least one") else cfg.newKinds = cfg.newKinds xor bit
-                }
-            }, keep = true, onClose = { if (cfg.newKinds != was) again() }))
-        }.apply { alpha = if (cfg.newOn) 1f else 0.45f }
-        add(R.drawable.ic_visibility_off, "Only What You Haven't Seen", "", SettingRow.Trail.SWITCH) {
-            cfg.newUnseen = !cfg.newUnseen
-            again()
-        }.apply { checked = cfg.newUnseen; alpha = if (cfg.newOn) 1f else 0.45f }
     }
 
     private fun paneFont() {
