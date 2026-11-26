@@ -756,24 +756,26 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             act.home.rebuild()
             refresh("coming")
         }
-        // The row as it looks on Home, smaller, or a note when nothing is due.
+        // The row as it looks on Home, two cards at Home's proportions, or a note when nothing is due.
+        val cardW = (PANE_W - 96f - 20f) / 2
+        val cardH = cardW * 189f / 336f
         val prev = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; alpha = if (Coming.shown(act)) 1f else 0.45f }
-        pane.place(prev, 48f, top1, PANE_W - 96f, 136f)
+        pane.place(prev, 48f, top1, PANE_W - 96f, cardH)
         val fill = { list: List<Coming.Upcoming> ->
             prev.removeAllViews()
             if (list.isEmpty()) {
                 val until = if (cfg.comingAhead == 3) "yet" else "in the next " + listOf("two weeks", "30 days", "3 months")[cfg.comingAhead]
                 prev.addView(act.label("Nothing due $until", 26f, Theme.TEXT_DIM), LinearLayout.LayoutParams(-1, -1))
-            } else for ((i, u) in list.take(3).withIndex()) {
+            } else for ((i, u) in list.take(2).withIndex()) {
                 val card = ArtCard(act).apply {
                     isFocusable = false; isClickable = false
                     val (chip, soon) = Coming.chip(act, cfg.clock, u.air)
                     title = u.name; subtitle = Coming.line(act, cfg.clock, u.air); badge = chip; badgeSoft = !soon
                     iconRes = R.drawable.ic_event_upcoming
                 }
-                prev.addView(card, LinearLayout.LayoutParams(Theme.ipx(242f), -1).apply { if (i > 0) leftMargin = Theme.ipx(20f) })
+                prev.addView(card, LinearLayout.LayoutParams(Theme.ipx(cardW), -1).apply { if (i > 0) leftMargin = Theme.ipx(20f) })
                 val m = Watch.cachedMeta(u.id)
-                Images.load(m?.background ?: u.poster, Theme.ipx(300f)) { b -> card.art = b }
+                Images.load(m?.background ?: u.poster, Theme.ipx(400f)) { b -> card.art = b }
             }
         }
         val ready = Coming.ready
@@ -784,7 +786,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             Net.run({ Coming.upcoming(ctx, shows, cfg.comingAhead) }) { if (prev.isAttachedToWindow) fill(it ?: emptyList()) }
         }
         val hidden = Coming.following(act).filter { it.id in cfg.comingHidden }
-        val add = optionColumn(top1 + 160f, "coming")
+        val add = optionColumn(top1 + cardH + 24f, "coming")
         add(R.drawable.ic_event_upcoming, "Show on Home", "", SettingRow.Trail.SWITCH) {
             if (!cfg.spotlight) { act.toast("Turn on Spotlight first"); return@add }
             cfg.comingOn = !cfg.comingOn
