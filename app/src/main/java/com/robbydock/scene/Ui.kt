@@ -1009,40 +1009,6 @@ class SmallPill(ctx: Context, var text: String, var iconRes: Int) : FocusView(ct
     }
 }
 
-/**
- * A row header that can take focus: plain text like other row headers, with a soft pill only while focused.
- * [on] marks the chosen tab. It dims while another tab in the header has focus, so only one tab looks lit.
- */
-class HeaderPill(ctx: Context, var text: String) : FocusView(ctx) {
-    private val tp = textPaint(26f, Theme.TEXT_DIM, Theme.MEDIUM)
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    override val focusScale = 1.04f
-    var on = false
-        set(v) { field = v; invalidate() }
-    private val pad get() = Theme.px(18f)
-
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension((pad * 2 + tp.measureText(text)).toInt(), MeasureSpec.getSize(heightMeasureSpec))
-    }
-
-    override fun getBaseline() = baseline(tp, height / 2f).toInt()
-
-    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
-        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        (parent as? ViewGroup)?.let { g -> for (i in 0 until g.childCount) g.getChildAt(i).invalidate() }
-    }
-
-    override fun onDraw(c: Canvas) {
-        val h = height.toFloat()
-        box.set(0f, 0f, width.toFloat(), h)
-        if (hot()) { fill.color = Theme.withAlpha(Theme.TEXT, 0.08f); c.drawRoundRect(box, h / 2, h / 2, fill) }
-        val sibling = (parent as? ViewGroup)?.hasFocus() == true && !hot()
-        tp.color = when { hot() || (on && !sibling) -> Theme.TEXT; on -> Theme.TEXT_DIM; else -> Theme.withAlpha(Theme.TEXT_DIM, 0.6f) }
-        c.drawText(text, pad, baseline(tp, h / 2), tp)
-        drawRing(c, h / 2)
-    }
-}
-
 class Chip(ctx: Context, private val text: String, private val tinted: Boolean = false) : View(ctx) {
     private val tp = if (tinted) textPaint(22f, Theme.accent, Theme.SEMIBOLD) else textPaint(22f, Theme.TEXT_DIM, Theme.MEDIUM)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)

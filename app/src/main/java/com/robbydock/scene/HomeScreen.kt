@@ -55,8 +55,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         /** Narrowest Now Playing, so the song stays readable in a small pill's place. */
         const val NP_MIN = 420f
         /** Tabs of a shared row: its first row, or the row that shares its place. */
-        const val TAB_FIRST = 0
-        const val TAB_SECOND = 1
     }
 
     private val ambience = Ambience(act)
@@ -114,14 +112,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     /** The first Continue watching cards' names and art, for previews in Settings. */
     fun sampleCards(): List<Pair<String, android.graphics.Bitmap?>> = cards.take(3).map { it.title to it.art }
     private var selected = 0
-    /** Coming up cards, when they fill the top row in place of Continue watching. */
-    private val upCards = ArrayList<ArtCard>()
-    /** Open tabs of the shared rows. Home opens on Continue watching and the library. */
-    private var topTab = TAB_FIRST
-    /** The Coming up card the spotlight shows. */
-    private var upSel = 0
-    /** The open tab's pill in the top row's header, or null when the row has one tab. */
-    private var topTabPill: View? = null
     private var primaryButton: View? = null
     private var scroll = 0f
     private var scrollAnim: ValueAnimator? = null
@@ -309,8 +299,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         avatar.locked = p.locked
         scrollTarget.clear()
         cards.clear()
-        upCards.clear()
-        topTabPill = null
         primaryButton = null
         weatherChanged()
 
@@ -334,7 +322,8 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         pinTiles.clear()
         val rowsTop = y
         pageTop = pinnedTarget
-        // Library rows lead the page, so the rows after them scroll further.
+        // Coming up leads the page, then the library rows, so the rows after them scroll further.
+        if (hero) y = buildComing(y, pinnedTarget, rowsTop)
         y = buildLibrary(y, pinnedTarget, rowsTop)
         if (cfg.showPinned) y = buildPinned(y, pinnedTarget - (y - rowsTop))
         if (cfg.showRecent) {
@@ -348,8 +337,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         buildGrid(y + 56f)
         if (selected >= act.continueItems.size) selected = 0
         if (hero) {
-            if (topTab == TAB_SECOND) selectUp(upSel.coerceAtMost(upCards.size - 1).coerceAtLeast(0), immediate = true)
-            else select(selected, immediate = true)
+            select(selected, immediate = true)
         }
 
         // Home uses the solid background mode.
@@ -497,28 +485,19 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         }
     }
 
-    /** Continue watching, with Coming up as a second tab when anything is due. */
+    /** Continue watching: the spotlight's row. */
     private fun buildContinue(y: Float) {
         val items = act.continueItems
-        val comingOn = Coming.shown(act)
-        if (comingOn) {
-            // An episode that has aired since the list loaded sends it back for a fresh one.
-            if (Coming.ready?.any { it.air.at < System.currentTimeMillis() } == true) Coming.reset()
-            if (Coming.ready == null) Coming.load(act) { rebuild() }
-        }
-        // Nothing due in the window: Coming up leaves the row.
-        val comingHas = comingOn && Coming.ready?.isEmpty() != true
-        if (!comingHas) topTab = TAB_FIRST
         // The header sits a little higher than other rows, so a lifted card never touches it.
-        topTabPill = rowTabs(y - 10f, 0f, "tophead", if (comingHas) listOf("Continue watching", "Coming up") else listOf("Continue watching"), topTab,
-            { topTab = it; upSel = 0 })
+        val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
+        head.addView(rowHeader("Continue watching"), LinearLayout.LayoutParams(-2, -2).apply { leftMargin = Theme.ipx(18f); rightMargin = Theme.ipx(18f) })
+        content.place(head, EDGE - 18f, y - 14f, -1f, 52f)
         // About 352 wide, sized so whole cards end at the right margin and the next one peeks in clearly.
         val gap = 28f
         val n = Math.round((Theme.W - EDGE * 2 + gap) / (352f + gap)).coerceAtLeast(2)
         val cw = (Theme.W - EDGE * 2 - (n - 1) * gap) / n
         val strip = Strip(act, cw, gap).apply { remember = false }
         content.place(strip, EDGE, y + 58f, Theme.W - EDGE, 198f * cw / 352f)
-        if (topTab == TAB_SECOND) { buildComingCards(strip); return }
         if (items.isEmpty()) {
             val card = ArtCard(act).also { it.cinema = true }.apply {
                 when {
@@ -659,55 +638,41 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     }
 
     /** The open tab's window in a shared row's header, such as "Next 30 days". */
-    /**
-     * Header of a shared row: rows with the same card shape share one place on Home, and tabs
-     * switch between them. One tab shows as a plain title. Tabs only look like controls when
-     * focused. Returns the open tab's pill, if any.
-     */
-    private fun rowTabs(y: Float, rowTarget: Float, key: String, names: List<String>, tab: Int, pick: (Int) -> Unit): View? {
-        val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
-        fun keepHead(v: FocusView, k: String) {
-            v.focusKey = k
-            v.id = View.generateViewId()
-            keyed[k] = v
-            scrollTarget[v] = rowTarget
-            head.addView(v, LinearLayout.LayoutParams(-2, Theme.ipx(52f)))
-        }
-        var open: View? = null
-        if (names.size > 1) for ((i, name) in names.withIndex()) {
-            val pill = HeaderPill(act, name).apply {
-                on = i == tab
-                contentDescription = name + if (i == tab) ", selected" else ""
-                setOnClickListener { if (i != tab) { pick(i); rebuild("$key:$i") } }
-            }
-            keepHead(pill, "$key:$i")
-            if (i == tab) open = pill
-        } else head.addView(rowHeader(names[0]), LinearLayout.LayoutParams(-2, -2).apply { leftMargin = Theme.ipx(18f); rightMargin = Theme.ipx(18f) })
-        // Left and right stay in the header, so they never jump down to a card.
-        if (head.childCount > 0) {
-            head.getChildAt(0).let { if (it is FocusView) it.nextFocusLeftId = it.id }
-            head.getChildAt(head.childCount - 1).let { if (it is FocusView) it.nextFocusRightId = it.id }
-        }
-        content.place(head, EDGE - 18f, y - 4f, -1f, 52f)
-        return open
+    /** Next episodes of followed series, soonest first, in a row of their own above the library. */
+    private fun buildComing(start: Float, target: Float, rowsTop: Float): Float {
+        if (!Coming.shown(act)) return start
+        // An episode that has aired since the list loaded sends it back for a fresh one.
+        if (Coming.ready?.any { it.air.at < System.currentTimeMillis() } == true) Coming.reset()
+        if (Coming.ready == null) Coming.load(act) { rebuild() }
+        // Nothing due in the window: the row leaves Home.
+        if (Coming.ready?.isEmpty() == true) return start
+        // The cards match Continue watching's size.
+        val gap = 28f
+        val n = Math.round((Theme.W - EDGE * 2 + gap) / (352f + gap)).coerceAtLeast(2)
+        val cw = (Theme.W - EDGE * 2 - (n - 1) * gap) / n
+        val h = 198f * cw / 352f
+        content.place(rowHeader("Coming up"), EDGE, start, -1f, 44f)
+        val strip = Strip(act, cw, gap).apply { remember = false }
+        content.place(strip, EDGE, start + 72f, Theme.W - EDGE, h)
+        buildComingCards(strip, target - (start - rowsTop))
+        return start + 72f + h + 56f
     }
 
-    /** Next episodes of followed series, soonest first, in the top row's strip. */
-    private fun buildComingCards(strip: Strip) {
+    private fun buildComingCards(strip: Strip, rowTarget: Float) {
         val list = Coming.ready
         fun keep(v: ArtCard, key: String) {
             v.focusKey = key
             v.id = View.generateViewId()
             keyed[key] = v
-            scrollTarget[v] = 0f
+            keyed.putIfAbsent("pin:0", v)
+            scrollTarget[v] = rowTarget
             strip.add(v)
-            upCards.add(v)
         }
         if (list == null) {
             for (i in 0 until 5) keep(ArtCard(act).also { it.cinema = true }.apply { loading = true }, "up:$i")
             return
         }
-        for ((i, u) in list.withIndex()) {
+        for (u in list) {
             val card = ArtCard(act).also { it.cinema = true }.apply {
                 val (chip, soon) = Coming.chip(act, act.cfg.clock, u.air)
                 title = u.name
@@ -718,7 +683,6 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
                 contentDescription = "${u.name}, $chip"
                 setOnClickListener { act.comingMenu(u) }
                 setOnLongClickListener { act.comingMenu(u); true }
-                setOnFocusChangeListener { _, has -> if (has) selectUp(i) }
             }
             keep(card, "up:${u.id}")
             // Series art, never the episode's still, so nothing ahead is spoiled.
@@ -1208,7 +1172,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
     private fun idleWatch(now: View?) {
         removeCallbacks(idleStart)
         backdrop.idle(false)
-        val rest = if (isInTouchMode) cards.isNotEmpty() && scroll == 0f else now != null && (now in cards || now in upCards || now.parent === buttons)
+        val rest = if (isInTouchMode) cards.isNotEmpty() && scroll == 0f else now != null && (now in cards || now.parent === buttons)
         if (Theme.moves && rest) postDelayed(idleStart, IDLE_MS)
     }
 
@@ -1233,82 +1197,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         select2Focus()
     }
 
-    /** Shows the Coming up card at [index] in the spotlight. */
-    private fun selectUp(index: Int, immediate: Boolean = false) {
-        upSel = index
-        pendingSelect?.let { removeCallbacks(it) }
-        val r = Runnable { showUpSpot(index) }
-        pendingSelect = r
-        if (immediate) r.run() else postDelayed(r, 180)
-        select2Focus()
-    }
-
-    /** An upcoming episode in the spotlight: show art and details, never the episode's still. */
-    private fun showUpSpot(index: Int) {
-        val u = Coming.ready?.getOrNull(index)
-        bar.visibility = INVISIBLE
-        barLabel.translationX = -Theme.px(440f)
-        synopsis.translationY = 0f
-        buttons.translationY = 0f
-        if (u == null) {
-            // Still loading: only the shimmer shows.
-            title.text = ""
-            barLabel.text = ""
-            loadingLines.visibility = VISIBLE
-            metaLine.visibility = INVISIBLE
-            synopsis.visibility = INVISIBLE
-            episode.visibility = GONE
-            return
-        }
-        val a = u.air
-        title.text = u.name
-        barLabel.text = Coming.long(act, act.cfg.clock, a)
-        loadingLines.visibility = VISIBLE
-        metaLine.visibility = INVISIBLE
-        synopsis.visibility = INVISIBLE
-        episode.visibility = INVISIBLE
-        val list = listOf(
-            Btn("Episode list", R.drawable.ic_list) { act.openDetail("series", u.id) },
-            Btn("More options", R.drawable.ic_more_horiz, true) { act.comingMenu(u) },
-        )
-        val focusedKey = (findFocus() as? FocusView)?.focusKey
-        buildButtons(list)
-        if (focusedKey?.startsWith("btn:") == true && findFocus() !== keyed[focusedKey]) (keyed[focusedKey] ?: primaryButton)?.focusQuietly()
-        select2Focus()
-        upMeta(u) { m ->
-            if (topTab != TAB_SECOND || upSel != index || Coming.ready?.getOrNull(index) !== u) return@upMeta
-            loadingLines.visibility = GONE
-            metaLine.visibility = VISIBLE
-            synopsis.visibility = VISIBLE
-            episode.visibility = VISIBLE
-            val metaText = android.text.SpannableStringBuilder(listOfNotNull(m?.year?.takeIf { it.isNotEmpty() }, "Series").joinToString("  ·  "))
-            m?.rating?.takeIf { it.isNotEmpty() }?.let {
-                metaText.append("  ·  ")
-                // Anime ratings are Kitsu's, so they never wear the IMDb tag.
-                if (u.id.startsWith("kitsu:")) metaText.append("Kitsu ")
-                else {
-                    val at = metaText.length
-                    metaText.append("I").setSpan(ImdbSpan(), at, at + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-                metaText.append(it)
-            }
-            metaLine.text = metaText
-            val named = a.title.isNotEmpty() && a.title != "TBA" && !Regex("^Episode \\d+$").matches(a.title)
-            episode.text = "S${a.season} · E${a.episode}" + (if (named) "  ${a.title}" else "")
-            synopsis.text = m?.description ?: ""
-            val url = m?.background ?: u.poster
-            if (url == null) { art(null); return@upMeta }
-            val full = Images.cached(url, Theme.ipx(1280f))
-            if (full != null) setBackdrop(full)
-            else {
-                upCards.getOrNull(index)?.art?.let { setBackdrop(it) }
-                Images.load(url, Theme.ipx(1280f), exact = false) { b -> if (b != null && topTab == TAB_SECOND && upSel == index) setBackdrop(b) }
-            }
-        }
-    }
-
     private fun showSpot(index: Int) {
-        if (topTab != TAB_FIRST) return
         val items = act.continueItems
         val item = items.getOrNull(index)
         if (item == null) {
@@ -1329,7 +1218,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         fillMeta(item, meta)
         if (meta == null) {
             Net.first({ Watch.meta(act, item.type, item.id) }) { m ->
-                if (topTab != TAB_FIRST || selected != index || act.continueItems.getOrNull(index) !== item) return@first
+                if (selected != index || act.continueItems.getOrNull(index) !== item) return@first
                 if (m != null) fillMeta(item, m) else loadingLines.visibility = GONE
             }
         }
@@ -1402,7 +1291,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
             if (full != null) setBackdrop(full)
             else {
                 cards.getOrNull(selected)?.art?.let { setBackdrop(it) }
-                Images.load(url, Theme.ipx(1280f), exact = false) { b -> if (b != null && topTab == TAB_FIRST && act.continueItems.getOrNull(selected) === item) setBackdrop(b) }
+                Images.load(url, Theme.ipx(1280f), exact = false) { b -> if (b != null && act.continueItems.getOrNull(selected) === item) setBackdrop(b) }
             }
             prefetchBackdrop(selected + 1)
         }
@@ -1417,23 +1306,12 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
 
     private fun newText(item: CwItem) = if (item.newCount == 1) "1 new episode" else "${item.newCount} new episodes"
 
-    /**
-     * Links the spotlight to the top row: down from the buttons goes to the shown card, past the
-     * tabs. Up from a card goes to the open tab, or to the first button when there are no tabs.
-     */
+    /** Links the spotlight to the top row: down from the buttons goes to the shown card, and up from a card to the first button. */
     private fun select2Focus() {
-        val row = if (topTab == TAB_SECOND) upCards else cards
-        val card = row.getOrNull(if (topTab == TAB_SECOND) upSel else selected) ?: row.firstOrNull() ?: return
-        // Down from the buttons stops at the row's tabs first, so they are never skipped.
-        val down = topTabPill ?: card
-        for (i in 0 until buttons.childCount) buttons.getChildAt(i).nextFocusDownId = down.id
-        val up = topTabPill ?: primaryButton ?: return
-        for (c in row) c.nextFocusUpId = up.id
-        topTabPill?.let { tab ->
-            primaryButton?.let { pb -> tab.nextFocusUpId = pb.id }
-            tab.nextFocusDownId = card.id
-            keyed["tophead:${1 - topTab}"]?.let { it.nextFocusUpId = tab.nextFocusUpId; it.nextFocusDownId = card.id }
-        }
+        val card = cards.getOrNull(selected) ?: cards.firstOrNull() ?: return
+        for (i in 0 until buttons.childCount) buttons.getChildAt(i).nextFocusDownId = card.id
+        val up = primaryButton ?: return
+        for (c in cards) c.nextFocusUpId = up.id
     }
 
     private fun showEmptySpot() {
