@@ -1921,7 +1921,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val own = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
         // Device card: its name, then versions.
         val card = Panel(act, 36f, { Theme.surface })
-        pane.place(card, 48f, top0, PANE_W - 96f, 300f)
+        pane.place(card, 48f, top0, PANE_W - 96f, 276f)
         val tx = 40f
         card.place(act.label(DeviceCatalog.name(), 34f, Theme.accent, Theme.BOLD), tx, 44f, PANE_W - 96f - tx - 28f, 46f)
         val facts = listOf(
@@ -1935,7 +1935,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             card.place(act.label(kv.first, 24f, Theme.TEXT_DIM, Theme.MEDIUM), tx, fy, 190f, 34f)
             card.place(act.label(kv.second, 24f, Theme.TEXT, Theme.MEDIUM), tx + 190f, fy, PANE_W - 96f - tx - 218f, 34f)
         }
-        var y = top0 + 340f
+        var y = top0 + 316f
 
         // Memory: this launcher, everything else, free.
         val mb = 1024L * 1024
@@ -1948,7 +1948,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
                 UsageBar.Part("Free", mi.availMem, Theme.withAlpha(Theme.TEXT, 0.12f)),
             )
         }, 56f, y + 44f, PANE_W - 112f, 80f)
-        y += 160f
+        y += 144f
 
         // Storage: filled in off the main thread.
         val storeTitle = act.label("Storage", 24f, Theme.TEXT_DIM, Theme.SEMIBOLD)
@@ -1956,19 +1956,19 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val storeBar = UsageBar(act)
         pane.place(storeBar, 56f, y + 44f, PANE_W - 112f, 80f)
         val clear = PillButton(act, "Clear artwork cache", R.drawable.ic_delete, false).apply { tag = "about0" }
-        // Scene's own icon in the TV's app launcher stays out of the main list: it is off by default.
-        val launcher = PillButton(act, launcherText(), R.drawable.ic_home_app_logo, false)
-        launcher.setOnClickListener {
-            showIcon(!iconShown())
-            launcher.text = launcherText()
-            launcher.requestLayout()
-            launcher.invalidate()
-            act.toast(if (iconShown()) "Scene shows in the app launcher" else "Scene is hidden from the app launcher")
+        pane.place(clear, 48f, y + 148f, -1f, 72f)
+        // Scene's own icon in the TV's app launcher is a demo-only setting. It is off by default.
+        if (Demo.on) {
+            val launcher = PillButton(act, launcherText(), R.drawable.ic_home_app_logo, false)
+            launcher.setOnClickListener {
+                showIcon(!iconShown())
+                launcher.text = launcherText()
+                launcher.requestLayout()
+                launcher.invalidate()
+                act.toast(if (iconShown()) "Scene shows in the app launcher" else "Scene is hidden from the app launcher")
+            }
+            pane.place(launcher, 48f, y + 148f + 72f + 16f, -1f, 72f)
         }
-        val buttons = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
-        buttons.addView(clear, LinearLayout.LayoutParams(-2, -1))
-        buttons.addView(launcher, LinearLayout.LayoutParams(-2, -1).apply { leftMargin = Theme.ipx(20f) })
-        pane.place(buttons, 48f, y + 148f, PANE_W - 96f, 72f)
         val fillStorage = {
             Net.run({
                 val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
