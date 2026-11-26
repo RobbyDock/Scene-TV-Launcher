@@ -393,6 +393,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         )
         for ((i, b) in actions.withIndex()) {
             val pb = PillButton(act, b.label, b.icon, i == 0)
+            pb.glow = false
             pb.focusKey = "connect:$i"
             pb.id = View.generateViewId()
             pb.setOnClickListener { b.run() }
@@ -454,6 +455,7 @@ class HomeScreen(private val act: HomeActivity) : FrameLayout(act) {
         for ((i, b) in list.withIndex()) {
             val pb = PillButton(act, if (b.round) "" else b.label, b.icon, i == 0)
             pb.bare = true
+            pb.glow = false
             pb.contentDescription = b.label
             // Keyed by icon.
             val key = "btn:${b.key}"

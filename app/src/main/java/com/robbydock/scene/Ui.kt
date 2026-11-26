@@ -718,6 +718,8 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
         val s = (w * 0.5f).toInt()
         ic.setBounds(((w - s) / 2).toInt(), ((height - s) / 2f).toInt(), ((w + s) / 2).toInt(), ((height + s) / 2f).toInt())
         ic.draw(c)
+        // The ring goes first, so the dot sits over it, never cut by it.
+        drawRing(c, w / 2)
         if (badge) {
             val d = w * 0.2f
             fill.color = Theme.bg
@@ -725,7 +727,6 @@ class RoundButton(ctx: Context, iconRes: Int, private val filled: Boolean) : Foc
             fill.color = Theme.accent
             c.drawCircle(w - d * 0.95f, d * 0.95f, d / 2, fill)
         }
-        drawRing(c, w / 2)
     }
 }
 
@@ -925,10 +926,12 @@ class PillButton(ctx: Context, var text: String, iconRes: Int, private val prima
     override val focusScale = 1.04f
     /** Secondary buttons show no pill until focused. Set before the view is attached. */
     var bare = false
+    /** Primary buttons glow in the accent colour; the Spotlight buttons turn it off. */
+    var glow = true
     override val restZ get() = if (primary) 6f else if (bare) 0f else 0.1f
     override val hotZ = 22f
-    override fun shadowTint() = if (primary) Theme.accent else 0
-    override val accentGlow get() = primary
+    override fun shadowTint() = if (primary && glow) Theme.accent else 0
+    override val accentGlow get() = primary && glow
     override fun shadowShape(o: android.graphics.Outline) = o.setRoundRect(0, 0, width, height, height / 2f)
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

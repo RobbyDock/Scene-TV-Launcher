@@ -25,7 +25,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val PER_PROFILE = setOf("Background", "True Dark", "Glass Strength", "Motion", "Focus Style", "Title Font", "Coming Up", "Clock & Weather", "Spotlight",
             "Pinned Apps", "Home Row", "All Apps Order", "Hidden Apps", "Hidden Titles", "App Rows", "App Categories", "Locked Apps", "Open on Start", "Your Library", "Export Settings", "Restore Settings", "Reset Home")
         /** Pane titles whose settings every profile shares. */
-        val ALL_PROFILES = setOf("Profiles", "Show in App Launcher", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
+        val ALL_PROFILES = setOf("Profiles", "Sounds", "Watch With", "Stremio Account", "Jellyfin Account", "Plex Account", "Screensaver", "Now Playing", "Inputs")
         val FOCUS_NAMES = arrayOf("White Ring and Lift", "White Ring", "Accent Glow")
         const val GROUP_LABEL_H = 32f
         const val GROUP_GAP = 14f
@@ -92,7 +92,9 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
     private var current: String? = null
     private var backupStatus = ""
     /** Progress or a problem from the last update step, shown in the Updates pane. */
+    /** Progress and problems from the update check and install, shown as a toast. */
     private var updateStatus = ""
+        set(v) { field = v; if (v.isNotEmpty()) act.toast(v) }
     private var pendingPreview: Runnable? = null
     private var glassPreview: GlassPreview? = null
 
@@ -267,11 +269,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         }
         row("locks", R.drawable.ic_lock, "Locked Apps", if (cfg.locked.isEmpty()) "None" else "${cfg.locked.size} locked") { paneLocks() }.apply {
             setOnClickListener { pane.findViewWithTag<View>("locks0")?.requestFocus() }
-        }
-        row("appicon", R.drawable.ic_home_app_logo, "Show in App Launcher", "") { paneAppIcon() }.apply {
-            trail = SettingRow.Trail.SWITCH
-            checked = iconShown()
-            setOnClickListener { showIcon(!iconShown()); refresh("appicon") }
         }
         endGroup()
 
@@ -507,11 +504,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         Motion.enter(pane)
     }
 
-    /** Quiet line at the foot of the pane saying what OK does. */
-    private fun paneHint(text: String) {
-        pane.place(act.label(text, 22f, Theme.TEXT_DIM, Theme.MEDIUM).apply { alpha = 0.8f }, 48f, PANE_H - 52f, PANE_W - 96f, 32f)
-    }
-
     /** A rounded card that holds a column of rows. */
     private fun cardColumn(): LinearLayout = object : LinearLayout(act) {
         private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
@@ -632,7 +624,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         add(R.drawable.ic_schedule, "Check Automatically", "", SettingRow.Trail.SWITCH) {
             Updates.setAuto(act, !Updates.auto(act)); refresh("update")
         }.checked = Updates.auto(act)
-        if (updateStatus.isNotEmpty()) paneHint(updateStatus)
     }
 
     /** Rounded card for a preview or short content, on the surface colour. */
@@ -1690,26 +1681,6 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         if (on) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
         android.content.pm.PackageManager.DONT_KILL_APP)
 
-    /** Scene's banner as the app launcher shows it, faded while hidden. */
-    private fun paneAppIcon() {
-        paneHeader("Show in App Launcher", "Adds Scene to the TV's own list of apps.")
-        val on = iconShown()
-        val w = 400f
-        val h = 225f
-        val y = top1 + 60f
-        val banner = ImageView(act).apply {
-            setImageResource(R.drawable.banner)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            clipToOutline = true
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, Theme.px(18f)) }
-            }
-            alpha = if (on) 1f else 0.3f
-        }
-        pane.place(banner, (PANE_W - w) / 2, y, w, h)
-        pane.place(centredText(if (on) "Shown in the app launcher" else "Hidden from the app launcher", 26f, Theme.TEXT_DIM), 48f, y + h + 32f, PANE_W - 96f, 40f)
-    }
-
     private fun paneHidden() {
         val shown = hiddenInstalled()
         if (shown.isEmpty()) {
@@ -1985,7 +1956,19 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
         val storeBar = UsageBar(act)
         pane.place(storeBar, 56f, y + 44f, PANE_W - 112f, 80f)
         val clear = PillButton(act, "Clear artwork cache", R.drawable.ic_delete, false).apply { tag = "about0" }
-        pane.place(clear, 48f, y + 148f, -1f, 72f)
+        // Scene's own icon in the TV's app launcher stays out of the main list: it is off by default.
+        val launcher = PillButton(act, launcherText(), R.drawable.ic_home_app_logo, false)
+        launcher.setOnClickListener {
+            showIcon(!iconShown())
+            launcher.text = launcherText()
+            launcher.requestLayout()
+            launcher.invalidate()
+            act.toast(if (iconShown()) "Scene shows in the app launcher" else "Scene is hidden from the app launcher")
+        }
+        val buttons = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+        buttons.addView(clear, LinearLayout.LayoutParams(-2, -1))
+        buttons.addView(launcher, LinearLayout.LayoutParams(-2, -1).apply { leftMargin = Theme.ipx(20f) })
+        pane.place(buttons, 48f, y + 148f, PANE_W - 96f, 72f)
         val fillStorage = {
             Net.run({
                 val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
@@ -2007,6 +1990,7 @@ class SettingsScreen(act: HomeActivity, private val initialFocus: String?) : Ove
             Images.trimMemory()
             Net.run({ Images.clearDisk() }) { act.toast("Artwork cache cleared"); fillStorage() }
         }
-        paneHint("Material Symbols  ·  Open-Meteo  ·  Cinemeta")
     }
+
+    private fun launcherText() = if (iconShown()) "Launcher icon: On" else "Launcher icon: Off"
 }
