@@ -185,7 +185,6 @@ object Stremio {
         val follow = ArrayList<Followed>()
         val seen = ArrayList<Followed>()
         val keep = ArrayList<SearchHit>()
-        val known = HashSet<String>()
         val yearAgo = System.currentTimeMillis() - 365L * 24 * 3600_000
         for (i in 0 until arr.length()) {
             val it = arr.optJSONObject(i) ?: continue
@@ -195,11 +194,6 @@ object Stremio {
             val temp = it.optBoolean("temp")
             val st = it.optJSONObject("state") ?: continue
             val id = it.optString("_id")
-            // Saved, or watched even once: Newly popular counts it as seen.
-            if (!(removed && !temp) || st.optInt("timesWatched") > 0 || parseTime(st.opt("lastWatched")) > 0) {
-                known.add(id)
-                known.add(NewlyPopular.NAME + NewlyPopular.nameKey(it.optString("name")))
-            }
             // Coming up follows series actually watched in the last year, anime included. Removed ones stay out.
             val watchedAt = parseTime(st.opt("lastWatched"))
             if (type == "series" && (id.startsWith("tt") || id.startsWith("kitsu:")) && (watchedAt > 0 || st.optInt("timesWatched") > 0) &&
@@ -223,7 +217,6 @@ object Stremio {
         out.sortByDescending { it.lastWatched }
         followed = follow
         watching = seen.sortedByDescending { it.lastWatched }
-        seenIds = known
         savedTitles = keep.sortedByDescending { it.added }
         libraryLoaded = true
         Store.writeText(ctx, LIB_CACHE, JSONArray(savedTitles.map { h ->
@@ -262,10 +255,6 @@ object Stremio {
         if (sort == 1) list = list.sortedBy { it.name.lowercase() }
         return list.drop(start).take(count)
     }
-
-    /** Library ids and title keys saved or watched, from the last library fetch: what Newly popular leaves out. */
-    @Volatile var seenIds: Set<String> = emptySet()
-        private set
 
     /** Series watched in the last year, anime included, newest first: what Coming up follows. */
     @Volatile var watching: List<Followed> = emptyList()

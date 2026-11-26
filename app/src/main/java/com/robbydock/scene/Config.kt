@@ -43,11 +43,6 @@ class Config {
     var comingOn = false
     var comingAhead = 1
     var comingHidden = ArrayList<String>()
-    /** Newly popular: on, window (0 three, 1 six, 2 twelve months), kinds shown (bits: 1 films, 2 series, 4 anime), unseen only. */
-    var newOn = true
-    var newMonths = 1
-    var newKinds = 7
-    var newUnseen = true
     /** Name every card on Home, not only the focused one. */
     var labelsAll = true
     /** Show the Scene splash while Home starts. */
@@ -124,7 +119,6 @@ class Config {
             .put("comingOn", comingOn)
             .put("comingWindow", comingAhead)
             .put("comingHidden", JSONArray(comingHidden))
-            .put("newOn", newOn).put("newMonths", newMonths).put("newKinds", newKinds).put("newUnseen", newUnseen)
             .put("labelsAll", labelsAll)
             .put("appSort", appSort)
             .put("appOrder", JSONArray(appOrder))
@@ -187,10 +181,6 @@ class Config {
         comingOn = o.optBoolean("comingOn", false)
         // Older settings had three choices, the last meaning every announced date.
         comingAhead = if (o.has("comingWindow")) o.optInt("comingWindow", 1).coerceIn(0, 3) else when (o.optInt("comingAhead", 1)) { 0 -> 0; 2 -> 3; else -> 1 }
-        newOn = o.optBoolean("newOn", true)
-        newMonths = o.optInt("newMonths", 1).coerceIn(0, 2)
-        newKinds = (o.optInt("newKinds", 0).takeIf { it in 1..7 } ?: when (o.optInt("newKind", 0)) { 1 -> 1; 2 -> 2; else -> 7 })
-        newUnseen = o.optBoolean("newUnseen", true)
         comingHidden = o.optJSONArray("comingHidden")?.let { a -> ArrayList((0 until minOf(a.length(), 500)).map { a.optString(it) }.filter { it.startsWith("tt") }) } ?: ArrayList()
         labelsAll = o.optBoolean("labelsAll", true)
         appSort = o.optInt("appSort", 0).coerceIn(0, 2)
